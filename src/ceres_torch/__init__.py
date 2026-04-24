@@ -31,7 +31,16 @@ from .interpolation import (
     cubic_hermite_spline,
     cubic_hermite_spline_derivative,
 )
-from .linear import LinearSolverResult, LinearSolverSummary, register_optional_backend, solve_linear_system
+from .linear import (
+    LinearSolverResult,
+    LinearSolverSummary,
+    clear_optional_backends,
+    get_optional_backend,
+    register_optional_backend,
+    schur_solve_dense,
+    solve_linear_system,
+    unregister_optional_backend,
+)
 from .losses import (
     ArctanLoss,
     CauchyLoss,

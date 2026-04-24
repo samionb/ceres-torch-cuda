@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 import torch
 
@@ -22,12 +22,24 @@ class LinearSolverResult:
     summary: LinearSolverSummary
 
 
-OptionalBackend = Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
+OptionalBackend = Callable[..., torch.Tensor | LinearSolverResult]
 _optional_backends: dict[str, OptionalBackend] = {}
 
 
 def register_optional_backend(name: str, backend: OptionalBackend) -> None:
     _optional_backends[name] = backend
+
+
+def unregister_optional_backend(name: str) -> None:
+    _optional_backends.pop(name, None)
+
+
+def clear_optional_backends() -> None:
+    _optional_backends.clear()
+
+
+def get_optional_backend(name: str) -> OptionalBackend | None:
+    return _optional_backends.get(name)
 
 
 def solve_linear_system(
@@ -50,6 +62,26 @@ def solve_linear_system(
     if solver_type is LinearSolverType.DENSE_SCHUR or (
         solver_type is LinearSolverType.ITERATIVE_SCHUR and num_eliminate > 0
     ):
+        backend_name = "iterative_schur" if solver_type is LinearSolverType.ITERATIVE_SCHUR else "dense_schur"
+        backend_result = _try_optional_linear_backend(
+            backend_name,
+            A,
+            b,
+            damping=damping,
+            num_eliminate=num_eliminate,
+            solver_type=solver_type,
+        )
+        if backend_result is None:
+            backend_result = _try_optional_linear_backend(
+                "block_schur",
+                A,
+                b,
+                damping=damping,
+                num_eliminate=num_eliminate,
+                solver_type=solver_type,
+            )
+        if backend_result is not None:
+            return backend_result
         x = schur_solve_dense(A, b, num_eliminate, damping=damping)
         x = _refine_solution(
             A,
@@ -71,13 +103,44 @@ def solve_linear_system(
         )
 
     if solver_type in {LinearSolverType.SPARSE_NORMAL_CHOLESKY, LinearSolverType.SPARSE_SCHUR}:
-        backend_name = "sparse_cholesky"
-        if backend_name in _optional_backends:
-            x = _optional_backends[backend_name](A, b)
-            return _summarize_solution(A, b, x, 1, "optional sparse backend")
+        backend_names = (
+            ["sparse_schur", "block_schur", "sparse_cholesky"]
+            if solver_type is LinearSolverType.SPARSE_SCHUR
+            else ["sparse_normal_cholesky", "sparse_cholesky"]
+        )
+        for backend_name in backend_names:
+            backend_result = _try_optional_linear_backend(
+                backend_name,
+                A,
+                b,
+                damping=damping,
+                num_eliminate=num_eliminate,
+                solver_type=solver_type,
+            )
+            if backend_result is not None:
+                return backend_result
         solver_type = LinearSolverType.DENSE_SCHUR if solver_type is LinearSolverType.SPARSE_SCHUR else LinearSolverType.DENSE_NORMAL_CHOLESKY
 
     if solver_type is LinearSolverType.DENSE_SCHUR:
+        backend_result = _try_optional_linear_backend(
+            "dense_schur",
+            A,
+            b,
+            damping=damping,
+            num_eliminate=num_eliminate,
+            solver_type=solver_type,
+        )
+        if backend_result is None:
+            backend_result = _try_optional_linear_backend(
+                "block_schur",
+                A,
+                b,
+                damping=damping,
+                num_eliminate=num_eliminate,
+                solver_type=solver_type,
+            )
+        if backend_result is not None:
+            return backend_result
         x = schur_solve_dense(A, b, num_eliminate, damping=damping)
         return _summarize_solution(A, b, x, 1, "dense schur")
 
@@ -251,6 +314,24 @@ def _uses_diagonal_preconditioner(preconditioner_type: PreconditionerType) -> bo
         PreconditionerType.CLUSTER_TRIDIAGONAL,
         PreconditionerType.SUBSET,
     }
+
+
+def _try_optional_linear_backend(
+    name: str,
+    A: torch.Tensor,
+    b: torch.Tensor,
+    **kwargs: Any,
+) -> LinearSolverResult | None:
+    backend = get_optional_backend(name)
+    if backend is None:
+        return None
+    try:
+        raw_result = backend(A, b, **kwargs)
+    except TypeError:
+        raw_result = backend(A, b)
+    if isinstance(raw_result, LinearSolverResult):
+        return raw_result
+    return _summarize_solution(A, b, raw_result, 1, f"optional {name} backend")
 
 
 def _refine_solution(

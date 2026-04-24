@@ -5,6 +5,7 @@ from typing import Optional, Sequence
 
 import torch
 
+from .linear import get_optional_backend
 from .problem import EvaluateOptions, ParameterBlock, Problem
 from .types import CovarianceAlgorithmType, SparseLinearAlgebraLibraryType
 
@@ -57,6 +58,10 @@ class Covariance:
             self._tangent_covariance = J.new_zeros((0, 0))
             return True
         if self.options.algorithm_type is CovarianceAlgorithmType.SPARSE_QR:
+            backend = get_optional_backend("sparse_qr_covariance")
+            if backend is not None:
+                self._tangent_covariance = backend(J, options=self.options, slices=self._slices)  # type: ignore[assignment]
+                return True
             return self._compute_qr_covariance(J)
         return self._compute_svd_covariance(J)
 
