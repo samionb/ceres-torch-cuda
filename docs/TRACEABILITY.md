@@ -20,7 +20,7 @@ areas. Status values:
 | Trust region minimizer | `trust_region_minimizer.cc` | `ceres_torch.solver` | partial | LM/dogleg convergence, radius updates, nonmonotonic windows, inner iterations, progress counters |
 | Line search minimizer | `line_search_minimizer.cc` | `ceres_torch.gradient_solver`, `solver` | partial | Armijo/Wolfe, shared interpolation modes, steepest, NCG, BFGS/LBFGS coverage, counters in first/least-squares solvers |
 | Dense linear solvers | dense QR/Cholesky files | `ceres_torch.linear` | partial | QR/Cholesky residual norms match Ceres tolerances |
-| Sparse/Schur solvers | Schur, CGNR, sparse Cholesky files | `ceres_torch.linear`, `schur`, `sparse_backends` | partial | Dense Schur with ordering, pure PyTorch iterative paths, SciPy/SuperLU sparse normal and Schur backend, CUDA block-Schur backend still planned |
+| Sparse/Schur solvers | Schur, CGNR, sparse Cholesky files | `ceres_torch.linear`, `schur`, `sparse_backends`, `cuda_backends`, `native/cuda` | partial | Dense Schur with ordering, pure PyTorch iterative paths, SciPy/SuperLU sparse normal and Schur backend, opt-in CUDA extension block-Schur backend |
 | Preconditioners | Jacobi, Schur, cluster, subset files | `ceres_torch.linear` | partial | Identity/Jacobi plus pure-core diagonal Schur/cluster/subset aliases; exact block forms planned |
 | Covariance | `covariance.h`, `covariance_impl.cc` | `ceres_torch.covariance`, `sparse_backends` | partial | Dense SVD/QR covariance blocks, loss toggle, constants, rank policy, SciPy/SuperLU sparse direct covariance backend |
 | GradientProblemSolver | `gradient_problem_solver.h` | `ceres_torch.gradient_solver` | partial | General unconstrained minimization with validation, reports, counters, line search |
@@ -28,7 +28,7 @@ areas. Status values:
 | Tiny solver | `tiny_solver.h` | `ceres_torch.tiny_solver` | partial | Small fixed-size LM parity with summary/report API |
 | C API | `c_api.h` | Not cloned | planned exception | Python callable/module support replaces C ABI |
 | Examples/data | `examples`, `data` | `examples`, tests | partial | Port all tutorial examples and BAL/NIST/SLAM validations |
-| CUDA | CUDA internal files | PyTorch device + optional backends | partial | CUDA tensor smoke tests, device helpers, extension backends needed for Ceres-scale sparse |
+| CUDA | CUDA internal files | PyTorch device + optional backends + `native/cuda` | partial | CUDA tensor smoke tests, device helpers, opt-in CUDA extension build/load test for block-Schur kernels |
 | Performance benchmarks | internal benchmark/test matrix | `ceres_torch.benchmarking`, `benchmarks` | partial | Opt-in dense, Schur, iterative, covariance, solver, and CUDA benchmark gates |
 
 ## Full-Parity Backlog
@@ -37,8 +37,8 @@ areas. Status values:
    sequences, nonmonotonic trust region windows, full projected constrained
    line search, richer inner-iteration ordering, and detailed timing counters.
 2. Extend native optional sparse backends beyond the SciPy/SuperLU CPU direct
-   path with SuiteSparse-like sparse QR behavior, cuDSS/cuSPARSE Cholesky, and
-   block-Schur CUDA kernels.
+   path and first CUDA block-Schur extension with SuiteSparse-like sparse QR
+   behavior and production cuDSS/cuSPARSE Cholesky kernels.
 3. Port generated bundle-adjustment solver matrix tests and compare against the
    local Ceres binaries once built using `GoldenSolverResult` assertions.
 4. Fill exact Ceres covariance sparse QR behavior, rank-deficiency policy, and

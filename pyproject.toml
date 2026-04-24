@@ -15,6 +15,7 @@ dependencies = ["torch>=2.2"]
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6"]
 sparse = ["scipy>=1.10"]
+cuda = ["ninja>=1.11"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -24,4 +25,5 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 markers = [
   "performance: opt-in benchmark/performance gates; enable with CERES_TORCH_RUN_BENCHMARKS=1",
+  "native_extension: opt-in native CUDA extension build tests; enable with CERES_TORCH_BUILD_CUDA_EXTENSIONS=1",
 ]

@@ -27,6 +27,17 @@ from .costs import (
     NumericDiffFirstOrderFunction,
 )
 from .covariance import Covariance, CovarianceOptions
+from .cuda_backends import (
+    CudaExtensionInfo,
+    cuda_block_schur,
+    cuda_extension_build_available,
+    cuda_extension_source_paths,
+    cuda_sparse_normal_cholesky,
+    get_cuda_extension_info,
+    load_cuda_extension,
+    register_cuda_sparse_backends,
+    unregister_cuda_sparse_backends,
+)
 from .gradient_solver import (
     GradientProblem,
     GradientProblemSolverOptions,
