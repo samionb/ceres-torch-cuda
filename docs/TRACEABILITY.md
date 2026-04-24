@@ -50,10 +50,14 @@ areas. Status values:
 ## Ported Examples
 
 - `hello_world.py`
+- `hello_world_analytic_diff.py`
+- `hello_world_numeric_diff.py`
 - `curve_fitting.py`
 - `robust_curve_fitting.py`
 - `powell.py`
 - `rosenbrock.py`
+- `rosenbrock_analytic_diff.py`
+- `rosenbrock_numeric_diff.py`
 - `tiny_bundle_adjustment.py`
 - `sampled_function.py`
 - `pose_graph_2d.py`

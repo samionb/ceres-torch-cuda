@@ -6,8 +6,12 @@ import ceres_torch as tc
 def run() -> tuple[tc.SolverSummary, torch.Tensor]:
     x = torch.tensor([0.5], dtype=torch.float64)
     problem = tc.Problem()
-    problem.add_residual_block(tc.AutoDiffCostFunction(lambda x: 10.0 - x, [1]), None, [x])
-    summary = tc.solve(tc.SolverOptions(max_num_iterations=25), problem)
+    problem.AddResidualBlock(
+        tc.NumericDiffCostFunction(lambda x: 10.0 - x, [1], 1, method=tc.NumericDiffMethodType.CENTRAL),
+        None,
+        [x],
+    )
+    summary = tc.solve(tc.SolverOptions(max_num_iterations=25, gradient_tolerance=1e-12), problem)
     return summary, x
 
 

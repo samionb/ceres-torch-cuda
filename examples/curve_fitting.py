@@ -3,7 +3,7 @@ import torch
 import ceres_torch as tc
 
 
-def main() -> None:
+def run() -> tuple[tc.SolverSummary, torch.Tensor, torch.Tensor]:
     dtype = torch.float64
     xs = torch.linspace(0.0, 1.0, 40, dtype=dtype)
     ys = torch.exp(0.3 + 1.7 * xs)
@@ -17,10 +17,14 @@ def main() -> None:
             [m, c],
         )
     summary = tc.solve(tc.SolverOptions(max_num_iterations=50), problem)
+    return summary, m, c
+
+
+def main() -> None:
+    summary, m, c = run()
     print(summary.BriefReport())
     print(f"m = {m.item():.6f}, c = {c.item():.6f}")
 
 
 if __name__ == "__main__":
     main()
-

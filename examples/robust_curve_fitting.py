@@ -91,13 +91,17 @@ def build_problem(use_robust_loss: bool) -> tuple[tc.Problem, torch.Tensor, torc
     return problem, m, c
 
 
-def main() -> None:
-    problem, m, c = build_problem(use_robust_loss=True)
+def run(use_robust_loss: bool = True) -> tuple[tc.SolverSummary, torch.Tensor, torch.Tensor]:
+    problem, m, c = build_problem(use_robust_loss=use_robust_loss)
     summary = tc.solve(tc.SolverOptions(max_num_iterations=25), problem)
+    return summary, m, c
+
+
+def main() -> None:
+    summary, m, c = run(use_robust_loss=True)
     print(summary.BriefReport())
     print(f"m={m.item():.8f} c={c.item():.8f}")
 
 
 if __name__ == "__main__":
     main()
-

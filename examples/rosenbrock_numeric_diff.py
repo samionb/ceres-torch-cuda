@@ -9,8 +9,12 @@ def rosenbrock(x: torch.Tensor) -> torch.Tensor:
 
 def run() -> tuple[tc.GradientProblemSolverSummary, torch.Tensor]:
     x = torch.tensor([-1.2, 1.0], dtype=torch.float64)
-    problem = tc.GradientProblem.from_callable(rosenbrock, size=2)
-    options = tc.GradientProblemSolverOptions(line_search_direction_type=tc.LineSearchDirectionType.BFGS)
+    problem = tc.GradientProblem(tc.NumericDiffFirstOrderFunction(rosenbrock), tc.EuclideanManifold(2))
+    options = tc.GradientProblemSolverOptions(
+        line_search_direction_type=tc.LineSearchDirectionType.BFGS,
+        max_num_iterations=200,
+        gradient_tolerance=1e-8,
+    )
     summary = tc.gradient_solve(options, problem, x)
     return summary, x
 
