@@ -50,6 +50,22 @@ def test_product_and_sphere_manifold_identities() -> None:
     torch.testing.assert_close(torch.linalg.norm(y[2:]), torch.linalg.norm(x[2:]), atol=1e-10, rtol=1e-10)
 
 
+def test_line_manifold_analytic_jacobian_matches_plus_linearization() -> None:
+    manifold = tc.LineManifold(3)
+    x = torch.tensor([1.0, -2.0, 0.5, 0.0, 0.0, 1.0], dtype=torch.float64)
+    delta = torch.tensor([0.2, -0.1, 0.03, -0.04], dtype=torch.float64)
+    eps = torch.tensor(1e-6, dtype=torch.float64)
+
+    J = manifold.plus_jacobian(x)
+    y = manifold.plus(x, eps * delta)
+    linearized = x + eps * (J @ delta)
+
+    assert J.shape == (6, 4)
+    assert manifold.minus_jacobian(x).shape == (4, 6)
+    torch.testing.assert_close(y, linearized, atol=1e-11, rtol=1e-11)
+    torch.testing.assert_close(manifold.minus(y, x), eps * delta, atol=1e-10, rtol=1e-10)
+
+
 def test_angle_axis_rotates_point() -> None:
     aa = torch.tensor([0.0, 0.0, torch.pi / 2], dtype=torch.float64)
     point = torch.tensor([1.0, 0.0, 0.0], dtype=torch.float64)

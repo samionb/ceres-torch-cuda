@@ -253,6 +253,32 @@ class LineManifold(Manifold):
         delta_d = self._sphere.minus(y_direction, x_direction)
         return torch.cat([delta_o, delta_d])
 
+    def plus_jacobian(self, x: torch.Tensor) -> torch.Tensor:
+        x = x.reshape(-1)
+        direction = x[self.size :]
+        basis = _sphere_basis(direction)
+        zeros = x.new_zeros((self.size, self.size - 1))
+        return torch.cat(
+            [
+                torch.cat([basis, zeros], dim=1),
+                torch.cat([zeros, basis], dim=1),
+            ],
+            dim=0,
+        )
+
+    def minus_jacobian(self, x: torch.Tensor) -> torch.Tensor:
+        x = x.reshape(-1)
+        direction = x[self.size :]
+        basis_t = _sphere_basis(direction).T
+        zeros = x.new_zeros((self.size - 1, self.size))
+        return torch.cat(
+            [
+                torch.cat([basis_t, zeros], dim=1),
+                torch.cat([zeros, basis_t], dim=1),
+            ],
+            dim=0,
+        )
+
 
 class ProductManifold(Manifold):
     def __init__(self, *manifolds: Manifold) -> None:
