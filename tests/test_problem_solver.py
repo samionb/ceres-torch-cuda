@@ -1,0 +1,52 @@
+import torch
+
+import torch_ceres as tc
+
+
+def test_problem_evaluate_autodiff_jacobian() -> None:
+    x = torch.tensor([2.0], dtype=torch.float64)
+    problem = tc.Problem()
+    problem.add_residual_block(tc.AutoDiffCostFunction(lambda x: x * x - 4.0, [1]), None, [x])
+    result = problem.evaluate(compute_jacobian=True)
+    torch.testing.assert_close(result.residuals, torch.tensor([0.0], dtype=torch.float64))
+    assert result.jacobian is not None
+    torch.testing.assert_close(result.jacobian, torch.tensor([[4.0]], dtype=torch.float64))
+
+
+def test_solve_hello_world() -> None:
+    x = torch.tensor([0.5], dtype=torch.float64)
+    problem = tc.Problem()
+    problem.add_residual_block(tc.AutoDiffCostFunction(lambda x: 10.0 - x, [1]), None, [x])
+    summary = tc.solve(tc.SolverOptions(max_num_iterations=25, gradient_tolerance=1e-12), problem)
+    assert summary.IsSolutionUsable()
+    torch.testing.assert_close(x, torch.tensor([10.0], dtype=torch.float64), atol=1e-6, rtol=1e-6)
+
+
+def test_bounds_are_enforced() -> None:
+    x = torch.tensor([0.0], dtype=torch.float64)
+    problem = tc.Problem()
+    problem.add_parameter_block(x)
+    problem.set_bounds(x, lower=torch.tensor([0.0], dtype=torch.float64), upper=torch.tensor([1.0], dtype=torch.float64))
+    problem.add_residual_block(tc.AutoDiffCostFunction(lambda x: 10.0 - x, [1]), None, [x])
+    summary = tc.solve(tc.SolverOptions(max_num_iterations=10), problem)
+    assert summary.IsSolutionUsable()
+    assert 0.0 <= x.item() <= 1.0
+    torch.testing.assert_close(x, torch.tensor([1.0], dtype=torch.float64), atol=1e-6, rtol=1e-6)
+
+
+def test_gradient_problem_rosenbrock() -> None:
+    x = torch.tensor([-1.2, 1.0], dtype=torch.float64)
+
+    def rosenbrock(x: torch.Tensor) -> torch.Tensor:
+        return (1.0 - x[0]) ** 2 + 100.0 * (x[1] - x[0] ** 2) ** 2
+
+    problem = tc.GradientProblem.from_callable(rosenbrock, size=2)
+    options = tc.GradientProblemSolverOptions(
+        max_num_iterations=200,
+        line_search_direction_type=tc.LineSearchDirectionType.LBFGS,
+        gradient_tolerance=1e-8,
+    )
+    summary = tc.gradient_solve(options, problem, x)
+    assert summary.IsSolutionUsable()
+    torch.testing.assert_close(x, torch.tensor([1.0, 1.0], dtype=torch.float64), atol=1e-4, rtol=1e-4)
+
