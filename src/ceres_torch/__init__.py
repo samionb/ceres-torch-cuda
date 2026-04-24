@@ -69,7 +69,14 @@ from .ordered_groups import OrderedGroups, ParameterBlockOrdering
 from .problem import CRSMatrix, EvaluateOptions, EvaluationResult, ParameterBlock, Problem, ProblemOptions, ResidualBlock
 from .rotation import *
 from .solver import solve
-from .testing import assert_close, cuda_available, finite_difference_jacobian, test_devices
+from .testing import (
+    GoldenSolverResult,
+    assert_close,
+    assert_solver_matches_golden,
+    cuda_available,
+    finite_difference_jacobian,
+    test_devices,
+)
 from .tiny_solver import TinySolver, TinySolverOptions, TinySolverSummary
 from .types import *
 

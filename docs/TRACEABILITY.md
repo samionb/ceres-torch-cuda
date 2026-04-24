@@ -39,7 +39,7 @@ areas. Status values:
    SuiteSparse-like sparse QR behavior, cuDSS/cuSPARSE Cholesky, and
    block-Schur CUDA kernels.
 3. Port generated bundle-adjustment solver matrix tests and compare against the
-   local Ceres binaries once built.
+   local Ceres binaries once built using `GoldenSolverResult` assertions.
 4. Fill exact Ceres covariance sparse QR behavior, rank-deficiency policy, and
    gauge-invariance examples.
 5. Port all examples under `C:\Git\ceres-solver\examples` and all public helper
