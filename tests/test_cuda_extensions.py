@@ -12,12 +12,16 @@ RUN_CUDA_EXTENSION_BUILD = os.environ.get("CERES_TORCH_BUILD_CUDA_EXTENSIONS") =
 
 def test_cuda_extension_info_reports_source_files() -> None:
     info = tc.get_cuda_extension_info()
+    torch_info = tc.get_torch_cuda_backend_info()
 
     assert info.backend == "cuda-extension"
     assert info.source_paths
     assert all(Path(path).exists() for path in info.source_paths)
     if not info.available:
         assert info.message
+    assert torch_info.backend == "torch-cuda"
+    if not torch_info.available:
+        assert torch_info.message
 
 
 def test_cuda_extension_backends_reject_cpu_tensors() -> None:
@@ -42,6 +46,59 @@ def test_register_cuda_sparse_backends_is_safe_when_unavailable() -> None:
         tc.unregister_cuda_sparse_backends()
 
 
+@pytest.mark.skipif(not tc.cuda_available(), reason="CUDA is not available")
+def test_torch_cuda_sparse_normal_backend_matches_dense_solver() -> None:
+    A = torch.tensor(
+        [
+            [3.0, 0.0, 1.0],
+            [0.0, 4.0, -1.0],
+            [2.0, 0.0, 0.0],
+            [0.0, -1.0, 5.0],
+        ],
+        dtype=torch.float64,
+        device="cuda",
+    )
+    expected = torch.tensor([1.0, -2.0, 0.5], dtype=torch.float64, device="cuda")
+    b = A @ expected
+    damping = torch.tensor([0.1, 0.2, 0.3], dtype=torch.float64, device="cuda")
+
+    result = tc.cuda_sparse_normal_cholesky(A, b, damping=damping)
+    dense = tc.solve_linear_system(A, b, solver_type=tc.LinearSolverType.DENSE_NORMAL_CHOLESKY, damping=damping)
+
+    assert result.summary.message == "torch cuda sparse normal equations"
+    torch.testing.assert_close(result.x, dense.x, atol=1e-10, rtol=1e-10)
+
+
+@pytest.mark.skipif(not tc.cuda_available(), reason="CUDA is not available")
+def test_torch_cuda_block_schur_matches_dense_solver() -> None:
+    A = torch.tensor(
+        [
+            [2.0, 0.0, 1.0],
+            [0.0, 3.0, -1.0],
+            [1.0, -1.0, 2.0],
+            [0.5, 0.0, 1.0],
+        ],
+        dtype=torch.float64,
+        device="cuda",
+    )
+    b = torch.tensor([1.0, -2.0, 0.5, 3.0], dtype=torch.float64, device="cuda")
+
+    tc.register_cuda_sparse_backends()
+    try:
+        result = tc.solve_linear_system(
+            A,
+            b,
+            solver_type=tc.LinearSolverType.SPARSE_SCHUR,
+            num_eliminate=1,
+        )
+    finally:
+        tc.unregister_cuda_sparse_backends()
+    dense = tc.solve_linear_system(A, b, solver_type=tc.LinearSolverType.DENSE_SCHUR, num_eliminate=1)
+
+    assert result.summary.message == "torch cuda block schur"
+    torch.testing.assert_close(result.x, dense.x, atol=1e-10, rtol=1e-10)
+
+
 @pytest.mark.native_extension
 @pytest.mark.skipif(not RUN_CUDA_EXTENSION_BUILD, reason="Set CERES_TORCH_BUILD_CUDA_EXTENSIONS=1 to build CUDA extension")
 @pytest.mark.skipif(not tc.cuda_extension_build_available(), reason=tc.get_cuda_extension_info().message)
@@ -58,7 +115,7 @@ def test_cuda_extension_block_schur_matches_dense_solver() -> None:
     )
     b = torch.tensor([1.0, -2.0, 0.5, 3.0], dtype=torch.float64, device="cuda")
 
-    result = tc.cuda_block_schur(A, b, num_eliminate=1)
+    result = tc.cuda_extension_block_schur(A, b, num_eliminate=1)
     dense = tc.solve_linear_system(A, b, solver_type=tc.LinearSolverType.DENSE_SCHUR, num_eliminate=1)
 
     assert result.summary.message == "cuda extension block schur"

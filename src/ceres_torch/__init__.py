@@ -30,12 +30,17 @@ from .covariance import Covariance, CovarianceOptions
 from .cuda_backends import (
     CudaExtensionInfo,
     cuda_block_schur,
+    cuda_extension_block_schur,
     cuda_extension_build_available,
+    cuda_extension_sparse_normal_cholesky,
     cuda_extension_source_paths,
     cuda_sparse_normal_cholesky,
+    get_torch_cuda_backend_info,
     get_cuda_extension_info,
     load_cuda_extension,
+    register_cuda_extension_backends,
     register_cuda_sparse_backends,
+    torch_cuda_backend_available,
     unregister_cuda_sparse_backends,
 )
 from .gradient_solver import (

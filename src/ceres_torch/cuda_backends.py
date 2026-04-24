@@ -38,6 +38,37 @@ class CudaExtensionInfo:
     message: str
 
 
+def torch_cuda_backend_available() -> bool:
+    return torch.version.cuda is not None and torch.cuda.is_available()
+
+
+def get_torch_cuda_backend_info() -> CudaExtensionInfo:
+    source_paths = cuda_extension_source_paths()
+    if torch.version.cuda is None:
+        return CudaExtensionInfo(
+            available=False,
+            backend="torch-cuda",
+            registered=(),
+            source_paths=source_paths,
+            message="PyTorch is not CUDA-enabled.",
+        )
+    if not torch.cuda.is_available():
+        return CudaExtensionInfo(
+            available=False,
+            backend="torch-cuda",
+            registered=(),
+            source_paths=source_paths,
+            message="No CUDA device is available.",
+        )
+    return CudaExtensionInfo(
+        available=True,
+        backend="torch-cuda",
+        registered=(),
+        source_paths=source_paths,
+        message="PyTorch CUDA backend is available.",
+    )
+
+
 def cuda_extension_source_paths() -> tuple[str, ...]:
     root = Path(__file__).resolve().parents[2]
     native_dir = root / "native" / "cuda"
@@ -82,6 +113,14 @@ def get_cuda_extension_info() -> CudaExtensionInfo:
             source_paths=source_paths,
             message="nvcc was not found on PATH.",
         )
+    if shutil.which("ninja") is None:
+        return CudaExtensionInfo(
+            available=False,
+            backend="cuda-extension",
+            registered=(),
+            source_paths=source_paths,
+            message="ninja was not found on PATH.",
+        )
     return CudaExtensionInfo(
         available=True,
         backend="cuda-extension",
@@ -116,8 +155,12 @@ def load_cuda_extension(*, verbose: bool | None = None, force: bool = False) -> 
     return _LOADED_EXTENSION
 
 
-def register_cuda_sparse_backends(*, overwrite: bool = True) -> CudaExtensionInfo:
-    info = get_cuda_extension_info()
+def register_cuda_sparse_backends(*, overwrite: bool = True, backend: str = "torch") -> CudaExtensionInfo:
+    if backend == "extension":
+        return register_cuda_extension_backends(overwrite=overwrite)
+    if backend != "torch":
+        raise ValueError("backend must be 'torch' or 'extension'")
+    info = get_torch_cuda_backend_info()
     if not info.available:
         return info
     backends = {
@@ -125,6 +168,30 @@ def register_cuda_sparse_backends(*, overwrite: bool = True) -> CudaExtensionInf
         "sparse_cholesky": cuda_sparse_normal_cholesky,
         "sparse_schur": cuda_block_schur,
         "block_schur": cuda_block_schur,
+    }
+    registered: list[str] = []
+    for name, backend_fn in backends.items():
+        if overwrite or get_optional_backend(name) is None:
+            register_optional_backend(name, backend_fn)
+            registered.append(name)
+    return CudaExtensionInfo(
+        available=True,
+        backend=info.backend,
+        registered=tuple(registered),
+        source_paths=info.source_paths,
+        message="Registered PyTorch CUDA sparse/block-Schur backends.",
+    )
+
+
+def register_cuda_extension_backends(*, overwrite: bool = True) -> CudaExtensionInfo:
+    info = get_cuda_extension_info()
+    if not info.available:
+        return info
+    backends = {
+        "sparse_normal_cholesky": cuda_extension_sparse_normal_cholesky,
+        "sparse_cholesky": cuda_extension_sparse_normal_cholesky,
+        "sparse_schur": cuda_extension_block_schur,
+        "block_schur": cuda_extension_block_schur,
     }
     registered: list[str] = []
     for name, backend in backends.items():
@@ -154,6 +221,58 @@ def cuda_sparse_normal_cholesky(
 ) -> LinearSolverResult:
     _require_cuda_tensor(A, "A")
     _require_cuda_tensor(b, "b")
+    H, rhs = _torch_normal_equations(A, b, damping)
+    x = torch.linalg.solve(H, rhs.reshape(-1, 1)).reshape(-1)
+    return LinearSolverResult(
+        x.reshape(-1),
+        _summary(A, b, x, damping=damping, iterations=1, message="torch cuda sparse normal equations"),
+    )
+
+
+def cuda_block_schur(
+    A: torch.Tensor,
+    b: torch.Tensor,
+    *,
+    damping: torch.Tensor | None = None,
+    num_eliminate: int = 0,
+    **_: Any,
+) -> LinearSolverResult:
+    _require_cuda_tensor(A, "A")
+    _require_cuda_tensor(b, "b")
+    H, rhs = _torch_normal_equations(A, b, damping)
+    n = H.shape[0]
+    if num_eliminate <= 0 or num_eliminate >= n:
+        x = torch.linalg.solve(H, rhs.reshape(-1, 1)).reshape(-1)
+    else:
+        e = int(num_eliminate)
+        Haa = H[:e, :e]
+        Hab = H[:e, e:]
+        Hba = H[e:, :e]
+        Hbb = H[e:, e:]
+        ga = rhs[:e]
+        gb = rhs[e:]
+        Haa_inv_Hab = torch.linalg.solve(Haa, Hab)
+        Haa_inv_ga = torch.linalg.solve(Haa, ga.reshape(-1, 1)).reshape(-1)
+        S = Hbb - Hba @ Haa_inv_Hab
+        rhs_b = gb - Hba @ Haa_inv_ga
+        xb = torch.linalg.solve(S, rhs_b.reshape(-1, 1)).reshape(-1)
+        xa = Haa_inv_ga - Haa_inv_Hab @ xb
+        x = torch.cat([xa, xb])
+    return LinearSolverResult(
+        x.reshape(-1),
+        _summary(A, b, x, damping=damping, iterations=1, message="torch cuda block schur"),
+    )
+
+
+def cuda_extension_sparse_normal_cholesky(
+    A: torch.Tensor,
+    b: torch.Tensor,
+    *,
+    damping: torch.Tensor | None = None,
+    **_: Any,
+) -> LinearSolverResult:
+    _require_cuda_tensor(A, "A")
+    _require_cuda_tensor(b, "b")
     extension = load_cuda_extension()
     damping_t = _damping_or_empty(A, damping)
     x = extension.normal_equations_solve(A.contiguous(), b.reshape(-1).contiguous(), damping_t.contiguous())
@@ -163,7 +282,7 @@ def cuda_sparse_normal_cholesky(
     )
 
 
-def cuda_block_schur(
+def cuda_extension_block_schur(
     A: torch.Tensor,
     b: torch.Tensor,
     *,
@@ -185,6 +304,19 @@ def cuda_block_schur(
         x.reshape(-1),
         _summary(A, b, x, damping=damping, iterations=1, message="cuda extension block schur"),
     )
+
+
+def _torch_normal_equations(
+    A: torch.Tensor,
+    b: torch.Tensor,
+    damping: torch.Tensor | None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    H = A.T @ A
+    if damping is not None:
+        d = _damping_or_empty(A, damping)
+        H = H + torch.diag(d)
+    rhs = A.T @ b.reshape(-1)
+    return H, rhs
 
 
 def _require_cuda_tensor(tensor: torch.Tensor, name: str) -> None:

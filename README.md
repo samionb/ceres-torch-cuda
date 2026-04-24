@@ -17,8 +17,9 @@ This first implementation slice includes:
 - CPU execution with device/dtype propagation. CUDA works when the installed
   PyTorch build supports it.
 - Optional SciPy/SuperLU sparse direct backends for sparse normal equations,
-  sparse Schur, and covariance. Future cuDSS/cuSPARSE and block-Schur CUDA
-  kernels are represented by an opt-in native CUDA extension tier.
+  sparse Schur, and covariance. CUDA sparse/block-Schur requests can use a
+  PyTorch CUDA backend; an opt-in native CUDA extension tier remains available
+  for future custom kernels.
 
 Full Ceres parity is intentionally tracked as a staged engineering effort in
 [`docs/TRACEABILITY.md`](docs/TRACEABILITY.md).
@@ -78,12 +79,10 @@ then fall back to the pure PyTorch paths if the optional backend is unavailable.
 The `tc.sparse_direct_benchmark(...)` helper provides a small smoke benchmark
 for this native sparse path.
 
-Optional native CUDA extension tier:
+Optional CUDA backend:
 
 ```powershell
-python -m pip install -e ".[cuda]"
-$env:CERES_TORCH_BUILD_CUDA_EXTENSIONS=1
-python -m pytest -m native_extension
+python -m pytest tests\test_cuda_smoke.py tests\test_cuda_extensions.py
 ```
 
 ```python
@@ -92,6 +91,12 @@ import ceres_torch as tc
 tc.register_cuda_sparse_backends()
 ```
 
-The CUDA tier builds `native/cuda` with `torch.utils.cpp_extension` and registers
-CUDA tensor backends for sparse normal equations and block-Schur solves. It
-requires a CUDA-enabled PyTorch build, a CUDA device, and `nvcc`.
+The default CUDA backend is pure PyTorch and requires only a CUDA-enabled
+PyTorch build and a CUDA device. The native extension sources under
+`native/cuda` can still be built explicitly for experimental custom kernels:
+
+```powershell
+python -m pip install -e ".[cuda]"
+$env:CERES_TORCH_BUILD_CUDA_EXTENSIONS=1
+python -m pytest -m native_extension
+```
