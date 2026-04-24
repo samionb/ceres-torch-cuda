@@ -69,6 +69,31 @@ def test_gradient_problem_bfgs_direction() -> None:
     torch.testing.assert_close(x, torch.tensor([1.0, 1.0], dtype=torch.float64), atol=1e-4, rtol=1e-4)
 
 
+def test_gradient_problem_options_validate_and_reports_include_counters(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(ValueError, match="max_num_iterations"):
+        tc.GradientProblemSolverOptions(max_num_iterations=-1).validate()
+
+    x = torch.tensor([-1.2, 1.0], dtype=torch.float64)
+
+    def rosenbrock(x: torch.Tensor) -> torch.Tensor:
+        return (1.0 - x[0]) ** 2 + 100.0 * (x[1] - x[0] ** 2) ** 2
+
+    summary = tc.gradient_solve(
+        tc.GradientProblemSolverOptions(
+            max_num_iterations=1,
+            minimizer_progress_to_stdout=True,
+            logging_type=tc.LoggingType.PER_MINIMIZER_ITERATION,
+        ),
+        tc.GradientProblem.from_callable(rosenbrock, size=2),
+        x,
+    )
+
+    assert summary.num_cost_evaluations >= summary.num_gradient_evaluations
+    assert "Gradient Solver Summary" in summary.FullReport()
+    assert "Cost evaluations" in summary.FullReport()
+    assert "0:" in capsys.readouterr().out
+
+
 @pytest.mark.parametrize(
     "direction_type,ncg_type",
     [

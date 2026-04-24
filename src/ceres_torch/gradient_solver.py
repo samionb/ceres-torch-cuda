@@ -56,6 +56,25 @@ class GradientProblemSolverOptions:
     update_state_every_iteration: bool = False
     callbacks: list = field(default_factory=list)
 
+    def validate(self) -> None:
+        checks = [
+            (self.max_num_iterations >= 0, "max_num_iterations must be >= 0"),
+            (self.max_solver_time_in_seconds >= 0, "max_solver_time_in_seconds must be >= 0"),
+            (self.function_tolerance >= 0, "function_tolerance must be >= 0"),
+            (self.gradient_tolerance >= 0, "gradient_tolerance must be >= 0"),
+            (self.parameter_tolerance >= 0, "parameter_tolerance must be >= 0"),
+            (self.max_lbfgs_rank > 0, "max_lbfgs_rank must be > 0"),
+            (self.min_line_search_step_size > 0, "min_line_search_step_size must be > 0"),
+            (self.max_num_line_search_step_size_iterations > 0, "max_num_line_search_step_size_iterations must be > 0"),
+            (
+                0.0 < self.min_line_search_step_contraction < 1.0,
+                "min_line_search_step_contraction must be in (0, 1)",
+            ),
+        ]
+        for ok, message in checks:
+            if not ok:
+                raise ValueError(message)
+
 
 @dataclass
 class GradientProblemSolverSummary:
@@ -77,11 +96,30 @@ class GradientProblemSolverSummary:
 
     def BriefReport(self) -> str:
         return (
-            "Torch Ceres Gradient Report: "
+            "ceres-torch Gradient Report: "
             f"Iterations: {len(self.iterations)}, "
             f"Initial cost: {self.initial_cost:.6e}, "
             f"Final cost: {self.final_cost:.6e}, "
             f"Termination: {self.termination_type.value}"
+        )
+
+    def FullReport(self) -> str:
+        return "\n".join(
+            [
+                "Gradient Solver Summary (ceres-torch)",
+                "",
+                f"Line search direction: {self.line_search_direction_type.value}",
+                f"Line search type: {self.line_search_type.value}",
+                f"Parameters: {self.num_parameters}",
+                f"Tangent parameters: {self.num_tangent_parameters}",
+                f"Initial cost: {self.initial_cost:.12e}",
+                f"Final cost: {self.final_cost:.12e}",
+                f"Iterations: {len(self.iterations)}",
+                f"Cost evaluations: {self.num_cost_evaluations}",
+                f"Gradient evaluations: {self.num_gradient_evaluations}",
+                f"Total time (s): {self.total_time_in_seconds:.6f}",
+                f"Termination: {self.termination_type.value} ({self.message})",
+            ]
         )
 
 
@@ -90,6 +128,7 @@ def gradient_solve(
     problem: GradientProblem,
     parameters: torch.Tensor,
 ) -> GradientProblemSolverSummary:
+    options.validate()
     start = time.perf_counter()
     manifold = problem.manifold or EuclideanManifold(parameters.numel())
     summary = GradientProblemSolverSummary(
@@ -99,6 +138,8 @@ def gradient_solve(
         line_search_type=options.line_search_type,
     )
     value, ambient_grad = problem.function.value_and_gradient(parameters.detach())
+    summary.num_cost_evaluations += 1
+    summary.num_gradient_evaluations += 1
     summary.initial_cost = float(value.detach().cpu())
     summary.final_cost = summary.initial_cost
     previous_grad: Optional[torch.Tensor] = None
@@ -109,6 +150,7 @@ def gradient_solve(
 
     for iteration in range(options.max_num_iterations + 1):
         value, ambient_grad = problem.function.value_and_gradient(parameters.detach())
+        summary.num_cost_evaluations += 1
         summary.num_gradient_evaluations += 1
         plus_jac = manifold.plus_jacobian(parameters.detach().reshape(-1)).to(dtype=parameters.dtype, device=parameters.device)
         tangent_grad = plus_jac.T @ ambient_grad.reshape(-1)
@@ -122,6 +164,7 @@ def gradient_solve(
             gradient_max_norm=float(grad_max.detach().cpu()),
         )
         summary.iterations.append(iter_summary)
+        _maybe_log_progress(options, iter_summary)
         summary.final_cost = cost
         if float(grad_max.detach().cpu()) <= options.gradient_tolerance:
             summary.termination_type = TerminationType.CONVERGENCE
@@ -158,6 +201,7 @@ def gradient_solve(
             for ls_iter in range(options.max_num_line_search_step_size_iterations):
                 candidate = manifold.plus(snapshot.reshape(-1), step_size * trial_direction).reshape_as(parameters)
                 cand_value, cand_ambient_grad = problem.function.value_and_gradient(candidate.detach())
+                summary.num_cost_evaluations += 1
                 summary.num_gradient_evaluations += 1
                 candidate_plus_jac = manifold.plus_jacobian(candidate.detach().reshape(-1)).to(
                     dtype=parameters.dtype, device=parameters.device
@@ -189,6 +233,8 @@ def gradient_solve(
             summary.message = "Line search failed."
             break
         new_value, new_ambient_grad = problem.function.value_and_gradient(parameters.detach())
+        summary.num_cost_evaluations += 1
+        summary.num_gradient_evaluations += 1
         new_plus_jac = manifold.plus_jacobian(parameters.detach().reshape(-1)).to(dtype=parameters.dtype, device=parameters.device)
         new_tangent_grad = new_plus_jac.T @ new_ambient_grad.reshape(-1)
         s = (iter_summary.step_size * direction).detach()
@@ -225,6 +271,18 @@ def gradient_solve(
                 return summary
     summary.total_time_in_seconds = time.perf_counter() - start
     return summary
+
+
+def _maybe_log_progress(options: GradientProblemSolverOptions, iteration: IterationSummary) -> None:
+    if not options.minimizer_progress_to_stdout or options.logging_type is LoggingType.SILENT:
+        return
+    print(
+        f"{iteration.iteration:4d}: "
+        f"f:{iteration.cost: .6e} "
+        f"g:{iteration.gradient_max_norm: .3e} "
+        f"h:{iteration.step_norm: .3e} "
+        f"a:{iteration.step_size: .3e}"
+    )
 
 
 def _search_direction(

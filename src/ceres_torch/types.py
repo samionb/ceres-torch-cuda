@@ -280,7 +280,7 @@ class SolverSummary:
 
     def BriefReport(self) -> str:
         return (
-            "Torch Ceres Solver Report: "
+            "ceres-torch Solver Report: "
             f"Iterations: {len(self.iterations)}, "
             f"Initial cost: {self.initial_cost:.6e}, "
             f"Final cost: {self.final_cost:.6e}, "
@@ -290,7 +290,7 @@ class SolverSummary:
     def FullReport(self) -> str:
         return "\n".join(
             [
-                "Solver Summary (torch-ceres)",
+                "Solver Summary (ceres-torch)",
                 "",
                 f"Minimizer: {self.minimizer_type.value}",
                 f"Linear solver: {self.linear_solver_type_used.value}",
@@ -311,4 +311,3 @@ class SolverSummary:
 
 
 DYNAMIC = -1
-
