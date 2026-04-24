@@ -84,3 +84,28 @@ def test_cubic_interpolator_linear_data() -> None:
     grid = tc.Grid1D(torch.arange(5, dtype=torch.float64))
     interpolator = tc.CubicInterpolator(grid)
     torch.testing.assert_close(interpolator.evaluate(torch.tensor(2.5, dtype=torch.float64)), torch.tensor(2.5, dtype=torch.float64))
+
+
+def test_cubic_interpolator_derivative_for_linear_data() -> None:
+    grid = tc.Grid1D(torch.arange(6, dtype=torch.float64), x0=-1.0, spacing=0.5)
+    interpolator = tc.CubicInterpolator(grid)
+    value, derivative = interpolator.evaluate_with_derivative(torch.tensor(0.25, dtype=torch.float64))
+    torch.testing.assert_close(value, torch.tensor(2.5, dtype=torch.float64))
+    torch.testing.assert_close(derivative, torch.tensor(2.0, dtype=torch.float64))
+
+
+def test_bicubic_interpolator_derivatives_for_planar_data() -> None:
+    rows = torch.arange(5, dtype=torch.float64).reshape(-1, 1)
+    cols = torch.arange(6, dtype=torch.float64).reshape(1, -1)
+    data = 2.0 * rows + 3.0 * cols
+    grid = tc.Grid2D(data, row0=-1.0, col0=2.0, row_spacing=0.5, col_spacing=2.0)
+    interpolator = tc.BiCubicInterpolator(grid)
+
+    value, drow, dcol = interpolator.evaluate_with_derivatives(
+        torch.tensor(0.25, dtype=torch.float64),
+        torch.tensor(7.0, dtype=torch.float64),
+    )
+
+    torch.testing.assert_close(value, torch.tensor(12.5, dtype=torch.float64))
+    torch.testing.assert_close(drow, torch.tensor(4.0, dtype=torch.float64))
+    torch.testing.assert_close(dcol, torch.tensor(1.5, dtype=torch.float64))

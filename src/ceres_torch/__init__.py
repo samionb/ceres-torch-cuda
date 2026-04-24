@@ -23,7 +23,14 @@ from .gradient_solver import (
     GradientProblemSolverSummary,
     gradient_solve,
 )
-from .interpolation import BiCubicInterpolator, CubicInterpolator, Grid1D, Grid2D, cubic_hermite_spline
+from .interpolation import (
+    BiCubicInterpolator,
+    CubicInterpolator,
+    Grid1D,
+    Grid2D,
+    cubic_hermite_spline,
+    cubic_hermite_spline_derivative,
+)
 from .linear import LinearSolverResult, LinearSolverSummary, register_optional_backend, solve_linear_system
 from .losses import (
     ArctanLoss,

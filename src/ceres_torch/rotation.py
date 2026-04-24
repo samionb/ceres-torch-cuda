@@ -33,6 +33,16 @@ def quaternion_conjugate(q: torch.Tensor) -> torch.Tensor:
     return torch.cat([q[..., :1], -q[..., 1:]], dim=-1)
 
 
+def quaternion_inverse(q: torch.Tensor) -> torch.Tensor:
+    q_conj = quaternion_conjugate(q)
+    norm_sq = torch.sum(q * q, dim=-1, keepdim=True).clamp_min(torch.finfo(q.dtype).tiny)
+    return q_conj / norm_sq
+
+
+def cross_product(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    return torch.linalg.cross(a, b, dim=-1)
+
+
 def angle_axis_to_quaternion(angle_axis: torch.Tensor) -> torch.Tensor:
     theta = torch.linalg.norm(angle_axis, dim=-1, keepdim=True)
     half = 0.5 * theta
@@ -101,10 +111,13 @@ def angle_axis_rotate_point(angle_axis: torch.Tensor, point: torch.Tensor) -> to
     return unit_quaternion_rotate_point(angle_axis_to_quaternion(angle_axis), point)
 
 
+def rotation_matrix_rotate_point(matrix: torch.Tensor, point: torch.Tensor) -> torch.Tensor:
+    return torch.matmul(matrix, point.unsqueeze(-1)).squeeze(-1)
+
+
 def convert_ceres_to_eigen_quaternion(q: torch.Tensor) -> torch.Tensor:
     return torch.cat([q[..., 1:], q[..., :1]], dim=-1)
 
 
 def convert_eigen_to_ceres_quaternion(q: torch.Tensor) -> torch.Tensor:
     return torch.cat([q[..., 3:], q[..., :3]], dim=-1)
-
