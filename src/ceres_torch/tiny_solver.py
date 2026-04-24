@@ -24,6 +24,19 @@ class TinySolverSummary:
     initial_cost: float
     final_cost: float
     iterations: int
+    message: str = ""
+
+    def IsSolutionUsable(self) -> bool:
+        return self.termination_type in {TerminationType.CONVERGENCE, TerminationType.NO_CONVERGENCE}
+
+    def BriefReport(self) -> str:
+        return (
+            "Tiny Solver Report: "
+            f"Iterations: {self.iterations}, "
+            f"Initial cost: {self.initial_cost:.6e}, "
+            f"Final cost: {self.final_cost:.6e}, "
+            f"Termination: {self.termination_type.value}"
+        )
 
 
 class TinySolver:
@@ -38,12 +51,14 @@ class TinySolver:
         initial = float(cost.detach().cpu())
         final = initial
         termination = TerminationType.NO_CONVERGENCE
+        message = "Maximum iterations reached."
         for iteration in range(1, self.options.max_num_iterations + 1):
             residual, jacobians = self.cost_function.compute_jacobians([parameters.detach()])
             J = jacobians[0]
             g = J.T @ residual
             if torch.max(torch.abs(g)) <= self.options.gradient_tolerance:
                 termination = TerminationType.CONVERGENCE
+                message = "Gradient tolerance reached."
                 break
             damping = jacobi_damping_from_jacobian(J, min_diagonal=1e-6, max_diagonal=1e32, radius=radius)
             step = solve_linear_system(J, -residual, solver_type=LinearSolverType.DENSE_QR, damping=damping).x
@@ -59,9 +74,11 @@ class TinySolver:
                     torch.linalg.norm(parameters.detach()) + self.options.parameter_tolerance
                 ):
                     termination = TerminationType.CONVERGENCE
+                    message = "Parameter tolerance reached."
                     break
                 if abs(float(cost.detach().cpu()) - final) <= self.options.function_tolerance * max(float(cost.detach().cpu()), 1.0):
                     termination = TerminationType.CONVERGENCE
+                    message = "Function tolerance reached."
                     break
                 cost = new_cost
             else:
@@ -70,5 +87,4 @@ class TinySolver:
                 radius *= 0.25
         else:
             iteration = self.options.max_num_iterations
-        return TinySolverSummary(termination, initial, final, iteration)
-
+        return TinySolverSummary(termination, initial, final, iteration, message)

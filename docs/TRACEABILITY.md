@@ -25,7 +25,7 @@ areas. Status values:
 | Covariance | `covariance.h`, `covariance_impl.cc` | `ceres_torch.covariance` | partial | Dense SVD/QR covariance blocks, loss toggle, constants, rank policy; sparse backend planned |
 | GradientProblemSolver | `gradient_problem_solver.h` | `ceres_torch.gradient_solver` | partial | General unconstrained minimization with line search |
 | Callbacks/logging | `iteration_callback.h`, callbacks files | `ceres_torch.callbacks` | implemented | Iteration/evaluation callback behavior and summary visibility |
-| Tiny solver | `tiny_solver.h` | `ceres_torch.tiny_solver` | partial | Small fixed-size LM parity |
+| Tiny solver | `tiny_solver.h` | `ceres_torch.tiny_solver` | partial | Small fixed-size LM parity with summary/report API |
 | C API | `c_api.h` | Not cloned | planned exception | Python callable/module support replaces C ABI |
 | Examples/data | `examples`, `data` | `examples`, tests | partial | Port all tutorial examples and BAL/NIST/SLAM validations |
 | CUDA | CUDA internal files | PyTorch device + optional backends | partial | CUDA tensors work; extension backends needed for Ceres-scale sparse |
@@ -52,3 +52,5 @@ areas. Status values:
 - `powell.py`
 - `rosenbrock.py`
 - `tiny_bundle_adjustment.py`
+- `sampled_function.py`
+- `pose_graph_2d.py`
