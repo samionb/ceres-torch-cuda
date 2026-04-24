@@ -116,6 +116,7 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
                 max_iterations=options.max_linear_solver_iterations,
                 tolerance=options.eta,
                 preconditioner_type=options.preconditioner_type,
+                block_sizes=[block.tangent_size for block in active_blocks],
                 use_mixed_precision=options.use_mixed_precision_solves,
                 max_refinement_iterations=options.max_num_refinement_iterations,
             )
@@ -508,6 +509,7 @@ def _run_inner_iterations(
             solver_type=LinearSolverType.DENSE_QR,
             tolerance=options.eta,
             max_iterations=options.max_linear_solver_iterations,
+            block_sizes=[block.tangent_size],
         ).x
         if not torch.all(torch.isfinite(step)):
             continue

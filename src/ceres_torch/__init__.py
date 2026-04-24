@@ -64,7 +64,9 @@ from .interpolation import (
 from .linear import (
     LinearSolverResult,
     LinearSolverSummary,
+    NormalEquationPreconditioner,
     OptionalBackendUnavailable,
+    build_normal_equation_preconditioner,
     clear_optional_backends,
     get_optional_backend,
     register_optional_backend,

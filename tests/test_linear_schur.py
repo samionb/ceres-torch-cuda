@@ -1,4 +1,5 @@
 import torch
+import pytest
 
 import ceres_torch as tc
 
@@ -31,7 +32,48 @@ def test_dense_schur_matches_damped_dense_qr_solution() -> None:
     torch.testing.assert_close(schur.x, dense.x, atol=1e-10, rtol=1e-10)
 
 
-def test_cgnr_accepts_ceres_preconditioner_families_as_diagonal_core_paths() -> None:
+def test_block_jacobi_preconditioner_applies_exact_normal_blocks() -> None:
+    A = torch.tensor(
+        [
+            [2.0, 1.0, 0.0],
+            [1.0, 3.0, 0.0],
+            [0.0, 1.0, 4.0],
+            [2.0, -1.0, 1.0],
+        ],
+        dtype=torch.float64,
+    )
+    damping = torch.tensor([0.1, 0.2, 0.3], dtype=torch.float64)
+    residual = torch.tensor([1.0, -2.0, 0.5], dtype=torch.float64)
+    preconditioner = tc.build_normal_equation_preconditioner(
+        A,
+        damping=damping,
+        preconditioner_type=tc.PreconditionerType.SCHUR_JACOBI,
+        block_sizes=[2, 1],
+    )
+    H = A.T @ A + torch.diag(damping)
+    expected = torch.cat(
+        [
+            torch.linalg.solve(H[:2, :2], residual[:2].reshape(-1, 1)).reshape(-1),
+            torch.linalg.solve(H[2:, 2:], residual[2:].reshape(-1, 1)).reshape(-1),
+        ]
+    )
+
+    assert preconditioner.message.startswith("block_jacobi/")
+    assert preconditioner.block_sizes == (2, 1)
+    torch.testing.assert_close(preconditioner.apply(residual), expected)
+
+
+def test_block_sizes_must_match_column_count() -> None:
+    A = torch.eye(3, dtype=torch.float64)
+    with pytest.raises(ValueError, match="block_sizes"):
+        tc.build_normal_equation_preconditioner(
+            A,
+            preconditioner_type=tc.PreconditionerType.SCHUR_JACOBI,
+            block_sizes=[2, 2],
+        )
+
+
+def test_cgnr_accepts_ceres_preconditioner_families_with_block_structure() -> None:
     A = torch.tensor(
         [
             [4.0, 1.0, 0.0],
@@ -57,10 +99,12 @@ def test_cgnr_accepts_ceres_preconditioner_families_as_diagonal_core_paths() -> 
             b,
             solver_type=tc.LinearSolverType.CGNR,
             preconditioner_type=preconditioner,
+            block_sizes=[2, 1],
             tolerance=1e-12,
             max_iterations=100,
         )
         assert result.summary.success
+        assert "block_jacobi/" in result.summary.message
         torch.testing.assert_close(result.x, expected, atol=1e-8, rtol=1e-8)
 
 

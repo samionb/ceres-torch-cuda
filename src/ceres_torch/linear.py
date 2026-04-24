@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Sequence
 
 import torch
 
@@ -20,6 +20,30 @@ class LinearSolverSummary:
 class LinearSolverResult:
     x: torch.Tensor
     summary: LinearSolverSummary
+
+
+@dataclass
+class NormalEquationPreconditioner:
+    preconditioner_type: PreconditionerType
+    message: str
+    block_sizes: tuple[int, ...] = ()
+    diagonal_inverse: Optional[torch.Tensor] = None
+    block_factors: Optional[list[tuple[slice, torch.Tensor, bool]]] = None
+
+    def apply(self, residual: torch.Tensor) -> torch.Tensor:
+        if self.preconditioner_type is PreconditionerType.IDENTITY:
+            return residual
+        if self.block_factors is not None:
+            z = torch.zeros_like(residual)
+            for block_slice, factor, is_cholesky in self.block_factors:
+                block_residual = residual[block_slice]
+                if is_cholesky:
+                    z[block_slice] = torch.cholesky_solve(block_residual.reshape(-1, 1), factor).reshape(-1)
+                else:
+                    z[block_slice] = _solve_square_system(factor, block_residual)
+            return z
+        assert self.diagonal_inverse is not None
+        return self.diagonal_inverse * residual
 
 
 OptionalBackend = Callable[..., torch.Tensor | LinearSolverResult]
@@ -56,6 +80,7 @@ def solve_linear_system(
     max_iterations: int = 500,
     tolerance: float = 1e-10,
     preconditioner_type: PreconditionerType = PreconditionerType.JACOBI,
+    block_sizes: Optional[Sequence[int]] = None,
     use_mixed_precision: bool = False,
     max_refinement_iterations: int = 0,
 ) -> LinearSolverResult:
@@ -74,6 +99,7 @@ def solve_linear_system(
             damping=damping,
             num_eliminate=num_eliminate,
             solver_type=solver_type,
+            block_sizes=block_sizes,
         )
         if backend_result is None:
             backend_result = _try_optional_linear_backend(
@@ -83,6 +109,7 @@ def solve_linear_system(
                 damping=damping,
                 num_eliminate=num_eliminate,
                 solver_type=solver_type,
+                block_sizes=block_sizes,
             )
         if backend_result is not None:
             return backend_result
@@ -104,6 +131,7 @@ def solve_linear_system(
             max_iterations=max_iterations,
             tolerance=tolerance,
             preconditioner_type=preconditioner_type,
+            block_sizes=block_sizes,
         )
 
     if solver_type in {LinearSolverType.SPARSE_NORMAL_CHOLESKY, LinearSolverType.SPARSE_SCHUR}:
@@ -120,6 +148,7 @@ def solve_linear_system(
                 damping=damping,
                 num_eliminate=num_eliminate,
                 solver_type=solver_type,
+                block_sizes=block_sizes,
             )
             if backend_result is not None:
                 return backend_result
@@ -133,6 +162,7 @@ def solve_linear_system(
             damping=damping,
             num_eliminate=num_eliminate,
             solver_type=solver_type,
+            block_sizes=block_sizes,
         )
         if backend_result is None:
             backend_result = _try_optional_linear_backend(
@@ -142,6 +172,7 @@ def solve_linear_system(
                 damping=damping,
                 num_eliminate=num_eliminate,
                 solver_type=solver_type,
+                block_sizes=block_sizes,
             )
         if backend_result is not None:
             return backend_result
@@ -198,6 +229,7 @@ def conjugate_gradient_normal_equations(
     max_iterations: int,
     tolerance: float,
     preconditioner_type: PreconditionerType,
+    block_sizes: Optional[Sequence[int]] = None,
 ) -> LinearSolverResult:
     rhs = A.T @ b.reshape(-1)
     diag = damping.reshape(-1) if damping is not None else torch.zeros(A.shape[1], dtype=A.dtype, device=A.device)
@@ -207,11 +239,13 @@ def conjugate_gradient_normal_equations(
 
     x = torch.zeros_like(rhs)
     r = rhs - matvec(x)
-    if _uses_diagonal_preconditioner(preconditioner_type):
-        M_inv = 1.0 / torch.clamp(torch.sum(A * A, dim=0) + diag, min=torch.finfo(A.dtype).eps)
-        z = M_inv * r
-    else:
-        z = r.clone()
+    preconditioner = build_normal_equation_preconditioner(
+        A,
+        damping=damping,
+        preconditioner_type=preconditioner_type,
+        block_sizes=block_sizes,
+    )
+    z = preconditioner.apply(r)
     p = z.clone()
     rz_old = torch.dot(r, z)
     b_norm = torch.linalg.norm(rhs).clamp_min(torch.finfo(A.dtype).eps)
@@ -227,12 +261,55 @@ def conjugate_gradient_normal_equations(
         if torch.linalg.norm(r) <= tolerance * b_norm:
             success = True
             break
-        z = M_inv * r if _uses_diagonal_preconditioner(preconditioner_type) else r
+        z = preconditioner.apply(r)
         rz_new = torch.dot(r, z)
         beta = rz_new / rz_old.clamp_min(torch.finfo(A.dtype).eps)
         p = z + beta * p
         rz_old = rz_new
-    return _summarize_solution(A, b, x, iterations, "cgnr", success=success)
+    return _summarize_solution(A, b, x, iterations, f"cgnr {preconditioner.message}", success=success)
+
+
+def build_normal_equation_preconditioner(
+    A: torch.Tensor,
+    *,
+    damping: Optional[torch.Tensor] = None,
+    preconditioner_type: PreconditionerType = PreconditionerType.JACOBI,
+    block_sizes: Optional[Sequence[int]] = None,
+) -> NormalEquationPreconditioner:
+    if preconditioner_type is PreconditionerType.IDENTITY:
+        return NormalEquationPreconditioner(preconditioner_type, "identity")
+
+    diag = damping.reshape(-1) if damping is not None else torch.zeros(A.shape[1], dtype=A.dtype, device=A.device)
+    normalized_block_sizes = _normalize_block_sizes(block_sizes, A.shape[1])
+    if _uses_block_preconditioner(preconditioner_type) and any(size > 1 for size in normalized_block_sizes):
+        H = A.T @ A + torch.diag(diag)
+        block_factors: list[tuple[slice, torch.Tensor, bool]] = []
+        offset = 0
+        for size in normalized_block_sizes:
+            block_slice = slice(offset, offset + size)
+            block = H[block_slice, block_slice]
+            try:
+                factor = torch.linalg.cholesky(block)
+                is_cholesky = True
+            except RuntimeError:
+                factor = block
+                is_cholesky = False
+            block_factors.append((block_slice, factor, is_cholesky))
+            offset += size
+        return NormalEquationPreconditioner(
+            preconditioner_type,
+            f"block_jacobi/{preconditioner_type.value}",
+            normalized_block_sizes,
+            block_factors=block_factors,
+        )
+
+    diagonal = torch.sum(A * A, dim=0) + diag
+    diagonal_inverse = 1.0 / torch.clamp(diagonal, min=torch.finfo(A.dtype).eps)
+    return NormalEquationPreconditioner(
+        preconditioner_type,
+        f"diagonal/{preconditioner_type.value}",
+        diagonal_inverse=diagonal_inverse,
+    )
 
 
 def jacobi_damping_from_jacobian(
@@ -309,15 +386,23 @@ def schur_solve_dense(
     return torch.cat([xa, xb])
 
 
-def _uses_diagonal_preconditioner(preconditioner_type: PreconditionerType) -> bool:
+def _uses_block_preconditioner(preconditioner_type: PreconditionerType) -> bool:
     return preconditioner_type in {
-        PreconditionerType.JACOBI,
         PreconditionerType.SCHUR_JACOBI,
         PreconditionerType.SCHUR_POWER_SERIES_EXPANSION,
         PreconditionerType.CLUSTER_JACOBI,
         PreconditionerType.CLUSTER_TRIDIAGONAL,
         PreconditionerType.SUBSET,
     }
+
+
+def _normalize_block_sizes(block_sizes: Optional[Sequence[int]], num_columns: int) -> tuple[int, ...]:
+    if block_sizes is None:
+        return tuple(1 for _ in range(num_columns))
+    normalized = tuple(int(size) for size in block_sizes if int(size) > 0)
+    if sum(normalized) != num_columns:
+        raise ValueError("block_sizes must sum to the number of columns in A")
+    return normalized
 
 
 def _try_optional_linear_backend(

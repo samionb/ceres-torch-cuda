@@ -21,7 +21,7 @@ areas. Status values:
 | Line search minimizer | `line_search_minimizer.cc` | `ceres_torch.gradient_solver`, `solver` | partial | Armijo/Wolfe, shared interpolation modes, steepest, NCG, BFGS/LBFGS coverage, counters in first/least-squares solvers |
 | Dense linear solvers | dense QR/Cholesky files | `ceres_torch.linear` | partial | QR/Cholesky residual norms match Ceres tolerances |
 | Sparse/Schur solvers | Schur, CGNR, sparse Cholesky files | `ceres_torch.linear`, `schur`, `sparse_backends`, `cuda_backends`, `native/cuda` | partial | Dense Schur with ordering, pure PyTorch iterative paths, SciPy/SuperLU sparse normal and Schur backend, PyTorch CUDA sparse/block-Schur backend, opt-in native CUDA extension |
-| Preconditioners | Jacobi, Schur, cluster, subset files | `ceres_torch.linear` | partial | Identity/Jacobi plus pure-core diagonal Schur/cluster/subset aliases; exact block forms planned |
+| Preconditioners | Jacobi, Schur, cluster, subset files | `ceres_torch.linear` | partial | Identity/Jacobi, exact block-Jacobi Schur/cluster/subset aliases from parameter block structure, specialized cluster graph forms planned |
 | Covariance | `covariance.h`, `covariance_impl.cc` | `ceres_torch.covariance`, `sparse_backends` | partial | Dense SVD/QR covariance blocks, loss toggle, constants, Ceres eigenvalue-ratio rank policy, rank summary, SciPy/SuperLU sparse direct covariance backend |
 | GradientProblemSolver | `gradient_problem_solver.h` | `ceres_torch.gradient_solver` | partial | General unconstrained minimization with validation, reports, counters, line search |
 | Callbacks/logging | `iteration_callback.h`, callbacks files | `ceres_torch.callbacks` | implemented | Iteration/evaluation callback behavior and summary visibility |
