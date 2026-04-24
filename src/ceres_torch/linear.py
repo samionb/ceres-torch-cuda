@@ -40,6 +40,8 @@ def solve_linear_system(
     max_iterations: int = 500,
     tolerance: float = 1e-10,
     preconditioner_type: PreconditionerType = PreconditionerType.JACOBI,
+    use_mixed_precision: bool = False,
+    max_refinement_iterations: int = 0,
 ) -> LinearSolverResult:
     if A.numel() == 0:
         x = b.new_zeros(b.shape)
@@ -49,6 +51,13 @@ def solve_linear_system(
         solver_type is LinearSolverType.ITERATIVE_SCHUR and num_eliminate > 0
     ):
         x = schur_solve_dense(A, b, num_eliminate, damping=damping)
+        x = _refine_solution(
+            A,
+            b,
+            x,
+            damping=damping,
+            max_refinement_iterations=max_refinement_iterations if use_mixed_precision else 0,
+        )
         return _summarize_solution(A, b, x, 1, "dense schur")
 
     if solver_type in {LinearSolverType.CGNR, LinearSolverType.ITERATIVE_SCHUR}:
@@ -80,9 +89,23 @@ def solve_linear_system(
         try:
             chol = torch.linalg.cholesky(lhs)
             x = torch.cholesky_solve(rhs.reshape(-1, 1), chol).reshape(-1)
+            x = _refine_solution(
+                A,
+                b,
+                x,
+                damping=damping,
+                max_refinement_iterations=max_refinement_iterations if use_mixed_precision else 0,
+            )
             return _summarize_solution(A, b, x, 1, "dense normal cholesky")
         except RuntimeError:
             x = torch.linalg.lstsq(lhs, rhs).solution.reshape(-1)
+            x = _refine_solution(
+                A,
+                b,
+                x,
+                damping=damping,
+                max_refinement_iterations=max_refinement_iterations if use_mixed_precision else 0,
+            )
             return _summarize_solution(A, b, x, 1, "normal equations lstsq fallback")
 
     if damping is not None:
@@ -92,7 +115,11 @@ def solve_linear_system(
     else:
         A_aug = A
         b_aug = b.reshape(-1)
-    x = torch.linalg.lstsq(A_aug, b_aug).solution.reshape(-1)
+    if use_mixed_precision and A_aug.dtype is torch.float64:
+        x = torch.linalg.lstsq(A_aug.float(), b_aug.float()).solution.to(dtype=A_aug.dtype).reshape(-1)
+    else:
+        x = torch.linalg.lstsq(A_aug, b_aug).solution.reshape(-1)
+    x = _refine_augmented_solution(A_aug, b_aug, x, max_refinement_iterations if use_mixed_precision else 0)
     return _summarize_solution(A_aug, b_aug, x, 1, "dense qr/lstsq")
 
 
@@ -113,7 +140,7 @@ def conjugate_gradient_normal_equations(
 
     x = torch.zeros_like(rhs)
     r = rhs - matvec(x)
-    if preconditioner_type is PreconditionerType.JACOBI:
+    if _uses_diagonal_preconditioner(preconditioner_type):
         M_inv = 1.0 / torch.clamp(torch.sum(A * A, dim=0) + diag, min=torch.finfo(A.dtype).eps)
         z = M_inv * r
     else:
@@ -133,7 +160,7 @@ def conjugate_gradient_normal_equations(
         if torch.linalg.norm(r) <= tolerance * b_norm:
             success = True
             break
-        z = M_inv * r if preconditioner_type is PreconditionerType.JACOBI else r
+        z = M_inv * r if _uses_diagonal_preconditioner(preconditioner_type) else r
         rz_new = torch.dot(r, z)
         beta = rz_new / rz_old.clamp_min(torch.finfo(A.dtype).eps)
         p = z + beta * p
@@ -213,6 +240,52 @@ def schur_solve_dense(
     xb = _solve_square_system(S, rhs_b)
     xa = Haa_inv_ga - Haa_inv_Hab @ xb
     return torch.cat([xa, xb])
+
+
+def _uses_diagonal_preconditioner(preconditioner_type: PreconditionerType) -> bool:
+    return preconditioner_type in {
+        PreconditionerType.JACOBI,
+        PreconditionerType.SCHUR_JACOBI,
+        PreconditionerType.SCHUR_POWER_SERIES_EXPANSION,
+        PreconditionerType.CLUSTER_JACOBI,
+        PreconditionerType.CLUSTER_TRIDIAGONAL,
+        PreconditionerType.SUBSET,
+    }
+
+
+def _refine_solution(
+    A: torch.Tensor,
+    b: torch.Tensor,
+    x: torch.Tensor,
+    *,
+    damping: Optional[torch.Tensor],
+    max_refinement_iterations: int,
+) -> torch.Tensor:
+    if max_refinement_iterations <= 0:
+        return x
+    if damping is not None:
+        D = torch.diag(torch.sqrt(torch.clamp(damping.reshape(-1), min=0.0)))
+        A_aug = torch.cat([A, D], dim=0)
+        b_aug = torch.cat([b.reshape(-1), b.new_zeros(A.shape[1])], dim=0)
+    else:
+        A_aug = A
+        b_aug = b.reshape(-1)
+    return _refine_augmented_solution(A_aug, b_aug, x, max_refinement_iterations)
+
+
+def _refine_augmented_solution(
+    A: torch.Tensor,
+    b: torch.Tensor,
+    x: torch.Tensor,
+    max_refinement_iterations: int,
+) -> torch.Tensor:
+    for _ in range(max_refinement_iterations):
+        residual = b.reshape(-1) - A @ x.reshape(-1)
+        if torch.linalg.norm(residual) <= 10.0 * torch.finfo(A.dtype).eps * torch.linalg.norm(b.reshape(-1)).clamp_min(1.0):
+            break
+        correction = torch.linalg.lstsq(A, residual).solution.reshape(-1)
+        x = x + correction
+    return x
 
 
 def _solve_square_system(A: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
