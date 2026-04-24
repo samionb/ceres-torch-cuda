@@ -18,7 +18,7 @@ areas. Status values:
 | Rotation helpers | `rotation.h` | `ceres_torch.rotation` | partial | Angle-axis, quaternion, matrix conversions, cross products, and point rotation |
 | Interpolation | `cubic_interpolation.h` | `ceres_torch.interpolation` | partial | Cubic/bicubic sample values and derivatives |
 | Trust region minimizer | `trust_region_minimizer.cc` | `ceres_torch.solver` | partial | LM/dogleg convergence, radius updates, nonmonotonic windows, inner iterations, progress counters |
-| Line search minimizer | `line_search_minimizer.cc` | `ceres_torch.gradient_solver`, `solver` | partial | Armijo/Wolfe, interpolation modes, steepest, NCG, BFGS/LBFGS coverage in first/least-squares solvers |
+| Line search minimizer | `line_search_minimizer.cc` | `ceres_torch.gradient_solver`, `solver` | partial | Armijo/Wolfe, shared interpolation modes, steepest, NCG, BFGS/LBFGS coverage, counters in first/least-squares solvers |
 | Dense linear solvers | dense QR/Cholesky files | `ceres_torch.linear` | partial | QR/Cholesky residual norms match Ceres tolerances |
 | Sparse/Schur solvers | Schur, CGNR, sparse Cholesky files | `ceres_torch.linear`, `schur` | partial | Dense Schur with ordering, pure PyTorch iterative paths, optional sparse/block-Schur backend registry |
 | Preconditioners | Jacobi, Schur, cluster, subset files | `ceres_torch.linear` | partial | Identity/Jacobi plus pure-core diagonal Schur/cluster/subset aliases; exact block forms planned |
@@ -35,7 +35,7 @@ areas. Status values:
 
 1. Expand solver parity: exact Ceres LM radius update, inexact LM forcing
    sequences, nonmonotonic trust region windows, full projected constrained
-   line search, inner iterations, and detailed timing counters.
+   line search, richer inner-iteration ordering, and detailed timing counters.
 2. Implement native optional sparse backends behind the registry for
    SuiteSparse-like sparse QR behavior, cuDSS/cuSPARSE Cholesky, and
    block-Schur CUDA kernels.

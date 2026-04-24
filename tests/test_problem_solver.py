@@ -72,6 +72,11 @@ def test_gradient_problem_bfgs_direction() -> None:
 def test_gradient_problem_options_validate_and_reports_include_counters(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(ValueError, match="max_num_iterations"):
         tc.GradientProblemSolverOptions(max_num_iterations=-1).validate()
+    with pytest.raises(ValueError, match="max_line_search_step_contraction"):
+        tc.GradientProblemSolverOptions(
+            max_line_search_step_contraction=0.8,
+            min_line_search_step_contraction=0.6,
+        ).validate()
 
     x = torch.tensor([-1.2, 1.0], dtype=torch.float64)
 
@@ -92,6 +97,43 @@ def test_gradient_problem_options_validate_and_reports_include_counters(capsys: 
     assert "Gradient Solver Summary" in summary.FullReport()
     assert "Cost evaluations" in summary.FullReport()
     assert "0:" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "interpolation_type",
+    [
+        tc.LineSearchInterpolationType.BISECTION,
+        tc.LineSearchInterpolationType.QUADRATIC,
+        tc.LineSearchInterpolationType.CUBIC,
+    ],
+)
+def test_gradient_problem_line_search_interpolation_modes_converge(
+    interpolation_type: tc.LineSearchInterpolationType,
+) -> None:
+    x = torch.tensor([-1.2, 1.0], dtype=torch.float64)
+
+    def rosenbrock(x: torch.Tensor) -> torch.Tensor:
+        return (1.0 - x[0]) ** 2 + 100.0 * (x[1] - x[0] ** 2) ** 2
+
+    summary = tc.gradient_solve(
+        tc.GradientProblemSolverOptions(
+            max_num_iterations=250,
+            line_search_direction_type=tc.LineSearchDirectionType.LBFGS,
+            line_search_interpolation_type=interpolation_type,
+            function_tolerance=1e-12,
+            gradient_tolerance=1e-8,
+            parameter_tolerance=1e-12,
+        ),
+        tc.GradientProblem.from_callable(rosenbrock, size=2),
+        x,
+    )
+
+    successful = [iteration for iteration in summary.iterations if iteration.step_is_successful]
+    assert summary.IsSolutionUsable()
+    assert successful
+    assert any(iteration.line_search_function_evaluations >= iteration.line_search_iterations for iteration in successful)
+    assert all(iteration.cumulative_time_in_seconds >= 0.0 for iteration in successful)
+    torch.testing.assert_close(x, torch.tensor([1.0, 1.0], dtype=torch.float64), atol=1e-4, rtol=1e-4)
 
 
 @pytest.mark.parametrize(

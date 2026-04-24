@@ -1,17 +1,16 @@
 from __future__ import annotations
 
-import math
 import time
 
 import torch
 
 from .linear import dogleg_step, jacobi_damping_from_jacobian, solve_linear_system
+from .line_search import next_line_search_step_size
 from .problem import EvaluateOptions, ParameterBlock, Problem
 from .types import (
     CallbackReturnType,
     IterationSummary,
     LineSearchDirectionType,
-    LineSearchInterpolationType,
     LineSearchType,
     LinearSolverType,
     MinimizerType,
@@ -344,7 +343,7 @@ def _line_search_solve(options: SolverOptions, problem: Problem) -> SolverSummar
                     iter_summary.step_is_successful = True
                     summary.num_successful_steps += 1
                     break
-                next_step_size = _next_line_search_step_size(
+                next_step_size = next_line_search_step_size(
                     options,
                     step_size=step_size,
                     cost=cost,
@@ -524,81 +523,6 @@ def _run_inner_iterations(
         else:
             problem.restore(snapshot)
     return current_cost, evaluations
-
-
-def _next_line_search_step_size(
-    options: SolverOptions,
-    *,
-    step_size: float,
-    cost: float,
-    candidate_cost: float,
-    directional_derivative: float,
-    previous_step_size: float | None,
-    previous_candidate_cost: float | None,
-) -> float:
-    if options.line_search_interpolation_type is LineSearchInterpolationType.BISECTION:
-        next_step_size = 0.5 * step_size
-    elif options.line_search_interpolation_type is LineSearchInterpolationType.QUADRATIC:
-        next_step_size = _quadratic_interpolation_step(step_size, cost, candidate_cost, directional_derivative)
-    else:
-        next_step_size = _cubic_interpolation_step(
-            step_size,
-            cost,
-            candidate_cost,
-            directional_derivative,
-            previous_step_size,
-            previous_candidate_cost,
-        )
-    lower_factor = max(0.5, min(options.max_line_search_step_contraction, options.min_line_search_step_contraction))
-    lower = step_size * lower_factor
-    upper = step_size * max(options.max_line_search_step_contraction, options.min_line_search_step_contraction)
-    return min(max(next_step_size, lower), upper)
-
-
-def _quadratic_interpolation_step(
-    step_size: float,
-    cost: float,
-    candidate_cost: float,
-    directional_derivative: float,
-) -> float:
-    denom = 2.0 * (candidate_cost - cost - directional_derivative * step_size)
-    if denom <= 0.0 or not math.isfinite(denom):
-        return 0.5 * step_size
-    step = -(directional_derivative * step_size * step_size) / denom
-    return step if math.isfinite(step) and step > 0.0 else 0.5 * step_size
-
-
-def _cubic_interpolation_step(
-    step_size: float,
-    cost: float,
-    candidate_cost: float,
-    directional_derivative: float,
-    previous_step_size: float | None,
-    previous_candidate_cost: float | None,
-) -> float:
-    if previous_step_size is None or previous_candidate_cost is None or previous_step_size == step_size:
-        return _quadratic_interpolation_step(step_size, cost, candidate_cost, directional_derivative)
-    t1, t2 = previous_step_size, step_size
-    y1 = previous_candidate_cost - cost - directional_derivative * t1
-    y2 = candidate_cost - cost - directional_derivative * t2
-    det = t1 * t1 * t2 * t2 * (t2 - t1)
-    if det == 0.0 or not math.isfinite(det):
-        return _quadratic_interpolation_step(step_size, cost, candidate_cost, directional_derivative)
-    c2 = (y1 * t2**3 - y2 * t1**3) / det
-    c3 = (y2 * t1 * t1 - y1 * t2 * t2) / det
-    if not math.isfinite(c2) or not math.isfinite(c3):
-        return _quadratic_interpolation_step(step_size, cost, candidate_cost, directional_derivative)
-    if abs(c3) < 1e-30:
-        return _quadratic_interpolation_step(step_size, cost, candidate_cost, directional_derivative)
-    discriminant = c2 * c2 - 3.0 * c3 * directional_derivative
-    if discriminant < 0.0:
-        return _quadratic_interpolation_step(step_size, cost, candidate_cost, directional_derivative)
-    roots = [
-        (-c2 + math.sqrt(discriminant)) / (3.0 * c3),
-        (-c2 - math.sqrt(discriminant)) / (3.0 * c3),
-    ]
-    candidates = [root for root in roots if math.isfinite(root) and root > 0.0 and root < step_size]
-    return min(candidates, default=_quadratic_interpolation_step(step_size, cost, candidate_cost, directional_derivative))
 
 
 def _updated_trust_region_radius(

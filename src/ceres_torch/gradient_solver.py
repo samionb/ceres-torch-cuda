@@ -7,6 +7,7 @@ from typing import Optional
 import torch
 
 from .costs import AutoDiffFirstOrderFunction, FirstOrderFunction
+from .line_search import next_line_search_step_size
 from .manifolds import EuclideanManifold, Manifold
 from .types import (
     CallbackReturnType,
@@ -69,6 +70,14 @@ class GradientProblemSolverOptions:
             (
                 0.0 < self.min_line_search_step_contraction < 1.0,
                 "min_line_search_step_contraction must be in (0, 1)",
+            ),
+            (
+                0.0 < self.max_line_search_step_contraction < 1.0,
+                "max_line_search_step_contraction must be in (0, 1)",
+            ),
+            (
+                self.max_line_search_step_contraction <= self.min_line_search_step_contraction,
+                "max_line_search_step_contraction must be <= min_line_search_step_contraction",
             ),
         ]
         for ok, message in checks:
@@ -149,6 +158,7 @@ def gradient_solve(
     inverse_hessian: Optional[torch.Tensor] = None
 
     for iteration in range(options.max_num_iterations + 1):
+        iter_start = time.perf_counter()
         value, ambient_grad = problem.function.value_and_gradient(parameters.detach())
         summary.num_cost_evaluations += 1
         summary.num_gradient_evaluations += 1
@@ -192,17 +202,24 @@ def gradient_solve(
             directional_derivative = -torch.dot(tangent_grad, tangent_grad)
         snapshot = parameters.detach().clone()
         accepted = False
+        accepted_value: torch.Tensor | None = None
+        accepted_tangent_grad: torch.Tensor | None = None
         directions = [direction]
+        trial_evaluations = 0
         if not torch.allclose(direction, -tangent_grad):
             directions.append(-tangent_grad)
         for trial_direction in directions:
             step_size = 1.0
             trial_derivative = torch.dot(tangent_grad, trial_direction)
+            previous_step_size: float | None = None
+            previous_candidate_cost: float | None = None
             for ls_iter in range(options.max_num_line_search_step_size_iterations):
                 candidate = manifold.plus(snapshot.reshape(-1), step_size * trial_direction).reshape_as(parameters)
                 cand_value, cand_ambient_grad = problem.function.value_and_gradient(candidate.detach())
                 summary.num_cost_evaluations += 1
                 summary.num_gradient_evaluations += 1
+                trial_evaluations += 1
+                candidate_cost = float(cand_value.detach().cpu())
                 candidate_plus_jac = manifold.plus_jacobian(candidate.detach().reshape(-1)).to(
                     dtype=parameters.dtype, device=parameters.device
                 )
@@ -219,11 +236,28 @@ def gradient_solve(
                         parameters.reshape(-1).copy_(candidate.reshape(-1))
                     accepted = True
                     direction = trial_direction
+                    accepted_value = cand_value.detach()
+                    accepted_tangent_grad = cand_tangent_grad.detach()
                     iter_summary.step_size = step_size
                     iter_summary.line_search_iterations = ls_iter + 1
+                    iter_summary.line_search_function_evaluations = trial_evaluations
+                    iter_summary.line_search_gradient_evaluations = trial_evaluations
+                    iter_summary.step_norm = float(torch.linalg.norm(step_size * trial_direction).detach().cpu())
+                    iter_summary.cost_change = cost - candidate_cost
                     iter_summary.step_is_successful = True
                     break
-                step_size *= options.min_line_search_step_contraction
+                next_step_size = next_line_search_step_size(
+                    options,
+                    step_size=step_size,
+                    cost=cost,
+                    candidate_cost=candidate_cost,
+                    directional_derivative=float(trial_derivative.detach().cpu()),
+                    previous_step_size=previous_step_size,
+                    previous_candidate_cost=previous_candidate_cost,
+                )
+                previous_step_size = step_size
+                previous_candidate_cost = candidate_cost
+                step_size = next_step_size
                 if step_size < options.min_line_search_step_size:
                     break
             if accepted:
@@ -231,12 +265,15 @@ def gradient_solve(
         if not accepted:
             summary.termination_type = TerminationType.NO_CONVERGENCE
             summary.message = "Line search failed."
+            iter_summary.iteration_time_in_seconds = time.perf_counter() - iter_start
+            iter_summary.cumulative_time_in_seconds = time.perf_counter() - start
             break
-        new_value, new_ambient_grad = problem.function.value_and_gradient(parameters.detach())
-        summary.num_cost_evaluations += 1
-        summary.num_gradient_evaluations += 1
-        new_plus_jac = manifold.plus_jacobian(parameters.detach().reshape(-1)).to(dtype=parameters.dtype, device=parameters.device)
-        new_tangent_grad = new_plus_jac.T @ new_ambient_grad.reshape(-1)
+        assert accepted_value is not None and accepted_tangent_grad is not None
+        new_value = accepted_value
+        new_tangent_grad = accepted_tangent_grad
+        summary.final_cost = float(new_value.detach().cpu())
+        iter_summary.iteration_time_in_seconds = time.perf_counter() - iter_start
+        iter_summary.cumulative_time_in_seconds = time.perf_counter() - start
         s = (iter_summary.step_size * direction).detach()
         y = (new_tangent_grad - tangent_grad).detach()
         s_history.append(s)
