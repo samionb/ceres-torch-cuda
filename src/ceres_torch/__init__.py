@@ -1,4 +1,13 @@
 from .callbacks import EvaluationCallback, IterationCallback, LoggingCallback
+from .benchmarking import (
+    BenchmarkResult,
+    covariance_benchmark,
+    dense_linear_benchmark,
+    format_benchmark_results,
+    run_default_benchmarks,
+    schur_benchmark,
+    solver_curve_fit_benchmark,
+)
 from .costs import (
     AnalyticCostFunction,
     AutoDiffCostFunction,

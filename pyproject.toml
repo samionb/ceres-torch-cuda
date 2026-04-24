@@ -21,4 +21,6 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
-
+markers = [
+  "performance: opt-in benchmark/performance gates; enable with CERES_TORCH_RUN_BENCHMARKS=1",
+]

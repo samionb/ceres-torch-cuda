@@ -29,6 +29,7 @@ areas. Status values:
 | C API | `c_api.h` | Not cloned | planned exception | Python callable/module support replaces C ABI |
 | Examples/data | `examples`, `data` | `examples`, tests | partial | Port all tutorial examples and BAL/NIST/SLAM validations |
 | CUDA | CUDA internal files | PyTorch device + optional backends | partial | CUDA tensor smoke tests, device helpers, extension backends needed for Ceres-scale sparse |
+| Performance benchmarks | internal benchmark/test matrix | `ceres_torch.benchmarking`, `benchmarks` | partial | Opt-in dense, Schur, iterative, covariance, solver, and CUDA benchmark gates |
 
 ## Full-Parity Backlog
 

@@ -47,3 +47,14 @@ print(x, summary.BriefReport())
 cd C:\Git\ceres-torch-cuda
 python -m pytest
 ```
+
+Opt-in performance gates and benchmark CSV output:
+
+```powershell
+$env:CERES_TORCH_RUN_BENCHMARKS=1
+python -m pytest -m performance
+python benchmarks\run_benchmarks.py --device cpu --repeats 5
+```
+
+Set `CERES_TORCH_BENCHMARK_MAX_SECONDS` to adjust the per-case pytest
+performance gate for slower or faster machines.
