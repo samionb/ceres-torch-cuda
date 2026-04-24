@@ -26,6 +26,10 @@ OptionalBackend = Callable[..., torch.Tensor | LinearSolverResult]
 _optional_backends: dict[str, OptionalBackend] = {}
 
 
+class OptionalBackendUnavailable(RuntimeError):
+    pass
+
+
 def register_optional_backend(name: str, backend: OptionalBackend) -> None:
     _optional_backends[name] = backend
 
@@ -329,6 +333,8 @@ def _try_optional_linear_backend(
         raw_result = backend(A, b, **kwargs)
     except TypeError:
         raw_result = backend(A, b)
+    except OptionalBackendUnavailable:
+        return None
     if isinstance(raw_result, LinearSolverResult):
         return raw_result
     return _summarize_solution(A, b, raw_result, 1, f"optional {name} backend")

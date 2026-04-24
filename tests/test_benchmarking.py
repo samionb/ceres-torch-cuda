@@ -22,6 +22,14 @@ def test_benchmark_harness_smoke_and_csv_format() -> None:
     assert result.name in text
 
 
+@pytest.mark.skipif(not tc.native_sparse_backends_available(), reason="SciPy sparse backend is not available")
+def test_sparse_direct_benchmark_smoke() -> None:
+    result = tc.sparse_direct_benchmark(rows=32, cols=8, density=0.25, warmup=0, repeats=1)
+
+    assert result.name.startswith("linear/SPARSE_NORMAL_CHOLESKY/scipy/")
+    assert result.metric < 1e-8
+
+
 @pytest.mark.performance
 @pytest.mark.skipif(not RUN_BENCHMARKS, reason="Set CERES_TORCH_RUN_BENCHMARKS=1 to run performance gates")
 def test_cpu_default_benchmark_suite_performance_gate() -> None:

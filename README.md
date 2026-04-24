@@ -16,8 +16,9 @@ This first implementation slice includes:
   trust-region LM/dogleg, line-search fallback, and covariance blocks.
 - CPU execution with device/dtype propagation. CUDA works when the installed
   PyTorch build supports it.
-- Optional-extension placeholders for future cuDSS/cuSPARSE and block-Schur
-  acceleration.
+- Optional SciPy/SuperLU sparse direct backends for sparse normal equations,
+  sparse Schur, and covariance. Future cuDSS/cuSPARSE and block-Schur CUDA
+  kernels remain extension targets.
 
 Full Ceres parity is intentionally tracked as a staged engineering effort in
 [`docs/TRACEABILITY.md`](docs/TRACEABILITY.md).
@@ -58,3 +59,21 @@ python benchmarks\run_benchmarks.py --device cpu --repeats 5
 
 Set `CERES_TORCH_BENCHMARK_MAX_SECONDS` to adjust the per-case pytest
 performance gate for slower or faster machines.
+
+Optional native sparse/direct backends:
+
+```powershell
+python -m pip install -e ".[sparse]"
+```
+
+```python
+import ceres_torch as tc
+
+tc.register_native_sparse_backends()
+```
+
+Once registered, `SPARSE_NORMAL_CHOLESKY`, `SPARSE_SCHUR`, and
+`SPARSE_QR` covariance requests use SciPy/SuperLU when the system is suitable,
+then fall back to the pure PyTorch paths if the optional backend is unavailable.
+The `tc.sparse_direct_benchmark(...)` helper provides a small smoke benchmark
+for this native sparse path.

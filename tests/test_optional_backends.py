@@ -1,3 +1,4 @@
+import pytest
 import torch
 
 import ceres_torch as tc
@@ -82,3 +83,108 @@ def test_optional_backend_registry_helpers() -> None:
     assert tc.get_optional_backend("temporary") is backend
     tc.clear_optional_backends()
     assert tc.get_optional_backend("temporary") is None
+
+
+def test_scipy_native_sparse_normal_backend_matches_dense_solver() -> None:
+    pytest.importorskip("scipy")
+    A = torch.tensor(
+        [
+            [3.0, 0.0, 1.0],
+            [0.0, 4.0, -1.0],
+            [2.0, 0.0, 0.0],
+            [0.0, -1.0, 5.0],
+        ],
+        dtype=torch.float64,
+    )
+    expected = torch.tensor([1.0, -2.0, 0.5], dtype=torch.float64)
+    b = A @ expected
+    damping = torch.tensor([0.1, 0.2, 0.3], dtype=torch.float64)
+
+    info = tc.register_native_sparse_backends()
+    try:
+        sparse = tc.solve_linear_system(
+            A,
+            b,
+            solver_type=tc.LinearSolverType.SPARSE_NORMAL_CHOLESKY,
+            damping=damping,
+        )
+        dense = tc.solve_linear_system(
+            A,
+            b,
+            solver_type=tc.LinearSolverType.DENSE_NORMAL_CHOLESKY,
+            damping=damping,
+        )
+    finally:
+        tc.unregister_native_sparse_backends()
+
+    assert info.available
+    assert "sparse_normal_cholesky" in info.registered
+    assert sparse.summary.message == "scipy sparse normal equations"
+    torch.testing.assert_close(sparse.x, dense.x, atol=1e-10, rtol=1e-10)
+
+
+def test_scipy_native_sparse_schur_backend_matches_dense_schur() -> None:
+    pytest.importorskip("scipy")
+    A = torch.tensor(
+        [
+            [2.0, 0.0, 1.0],
+            [0.0, 3.0, -1.0],
+            [1.0, -1.0, 2.0],
+            [0.5, 0.0, 1.0],
+        ],
+        dtype=torch.float64,
+    )
+    b = torch.tensor([1.0, -2.0, 0.5, 3.0], dtype=torch.float64)
+
+    tc.register_scipy_sparse_backends()
+    try:
+        sparse = tc.solve_linear_system(
+            A,
+            b,
+            solver_type=tc.LinearSolverType.SPARSE_SCHUR,
+            num_eliminate=1,
+        )
+        dense = tc.solve_linear_system(
+            A,
+            b,
+            solver_type=tc.LinearSolverType.DENSE_SCHUR,
+            num_eliminate=1,
+        )
+    finally:
+        tc.unregister_scipy_sparse_backends()
+
+    assert sparse.summary.message == "scipy sparse schur"
+    torch.testing.assert_close(sparse.x, dense.x, atol=1e-10, rtol=1e-10)
+
+
+def test_scipy_native_sparse_covariance_backend_matches_dense_svd() -> None:
+    pytest.importorskip("scipy")
+    x = torch.zeros(3, dtype=torch.float64)
+    A = torch.tensor(
+        [
+            [2.0, 0.0, 1.0],
+            [0.0, 3.0, -1.0],
+            [1.0, 1.0, 0.0],
+            [0.5, -1.0, 2.0],
+        ],
+        dtype=torch.float64,
+    )
+    problem = tc.Problem()
+    block = problem.add_parameter_block(x)
+    problem.add_residual_block(tc.NormalPrior(A, torch.zeros(3, dtype=torch.float64)), None, [x])
+
+    tc.register_native_sparse_backends()
+    try:
+        sparse = tc.Covariance(tc.CovarianceOptions(algorithm_type=tc.CovarianceAlgorithmType.SPARSE_QR))
+        dense = tc.Covariance(tc.CovarianceOptions(algorithm_type=tc.CovarianceAlgorithmType.DENSE_SVD))
+        assert sparse.compute([(block, block)], problem)
+        assert dense.compute([(block, block)], problem)
+    finally:
+        tc.unregister_native_sparse_backends()
+
+    torch.testing.assert_close(
+        sparse.get_covariance_block(block, block),
+        dense.get_covariance_block(block, block),
+        atol=1e-10,
+        rtol=1e-10,
+    )

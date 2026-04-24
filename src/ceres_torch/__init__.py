@@ -6,6 +6,7 @@ from .benchmarking import (
     format_benchmark_results,
     run_default_benchmarks,
     schur_benchmark,
+    sparse_direct_benchmark,
     solver_curve_fit_benchmark,
 )
 from .costs import (
@@ -47,6 +48,7 @@ from .interpolation import (
 from .linear import (
     LinearSolverResult,
     LinearSolverSummary,
+    OptionalBackendUnavailable,
     clear_optional_backends,
     get_optional_backend,
     register_optional_backend,
@@ -82,6 +84,18 @@ from .ordered_groups import OrderedGroups, ParameterBlockOrdering
 from .problem import CRSMatrix, EvaluateOptions, EvaluationResult, ParameterBlock, Problem, ProblemOptions, ResidualBlock
 from .rotation import *
 from .solver import solve
+from .sparse_backends import (
+    NativeSparseBackendInfo,
+    native_sparse_backends_available,
+    register_native_sparse_backends,
+    register_scipy_sparse_backends,
+    scipy_sparse_available,
+    scipy_sparse_normal_cholesky,
+    scipy_sparse_qr_covariance,
+    scipy_sparse_schur,
+    unregister_native_sparse_backends,
+    unregister_scipy_sparse_backends,
+)
 from .testing import (
     GoldenSolverResult,
     assert_close,

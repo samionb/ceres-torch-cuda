@@ -12,6 +12,7 @@ from .covariance import Covariance
 from .linear import solve_linear_system
 from .problem import Problem
 from .solver import solve
+from .sparse_backends import native_sparse_backends_available, register_native_sparse_backends, unregister_native_sparse_backends
 from .types import LinearSolverType, SolverOptions
 
 
@@ -118,6 +119,44 @@ def schur_benchmark(
 
     return time_callable(
         f"schur/dense/{rows}x{cols}/elim{eliminate}",
+        run,
+        device=device,
+        dtype=dtype,
+        warmup=warmup,
+        repeats=repeats,
+    )
+
+
+def sparse_direct_benchmark(
+    *,
+    rows: int = 200,
+    cols: int = 48,
+    density: float = 0.15,
+    device: torch.device | str = "cpu",
+    dtype: torch.dtype = torch.float64,
+    warmup: int = 1,
+    repeats: int = 5,
+) -> BenchmarkResult:
+    if not native_sparse_backends_available():
+        raise RuntimeError("Native sparse backends are not available; install the 'sparse' extra.")
+    generator = torch.Generator(device="cpu").manual_seed(23)
+    A = _randn((rows, cols), generator=generator, dtype=dtype, device=device)
+    mask = (torch.rand((rows, cols), generator=generator, dtype=dtype) < density).to(device=device)
+    A = A * mask
+    A[:cols, :] = A[:cols, :] + torch.eye(cols, dtype=dtype, device=device)
+    x_true = _randn((cols,), generator=generator, dtype=dtype, device=device)
+    b = A @ x_true
+
+    def run() -> torch.Tensor:
+        register_native_sparse_backends()
+        try:
+            result = solve_linear_system(A, b, solver_type=LinearSolverType.SPARSE_NORMAL_CHOLESKY)
+        finally:
+            unregister_native_sparse_backends()
+        return torch.linalg.norm(A @ result.x - b)
+
+    return time_callable(
+        f"linear/SPARSE_NORMAL_CHOLESKY/scipy/{rows}x{cols}/density{density:g}",
         run,
         device=device,
         dtype=dtype,
