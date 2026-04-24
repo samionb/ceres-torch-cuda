@@ -5,7 +5,7 @@ import time
 import torch
 
 from .linear import dogleg_step, jacobi_damping_from_jacobian, solve_linear_system
-from .problem import Problem
+from .problem import EvaluateOptions, ParameterBlock, Problem
 from .types import (
     CallbackReturnType,
     IterationSummary,
@@ -31,11 +31,13 @@ def solve(options: SolverOptions, problem: Problem) -> SolverSummary:
 def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSummary:
     start = time.perf_counter()
     summary = _new_summary(options, problem)
+    active_blocks = _linear_solver_parameter_order(problem)
+    num_eliminate = _num_eliminate_for_schur(active_blocks, _effective_linear_solver(options.linear_solver_type))
     radius = options.initial_trust_region_radius
     consecutive_invalid = 0
     previous_cost: float | None = None
 
-    initial = problem.evaluate(compute_jacobian=True)
+    initial = problem.evaluate(EvaluateOptions(parameter_blocks=active_blocks), compute_jacobian=True)
     summary.initial_cost = float(initial.cost.detach().cpu())
     summary.final_cost = summary.initial_cost
     if initial.gradient is None:
@@ -45,7 +47,7 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
 
     for iteration in range(options.max_num_iterations + 1):
         iter_start = time.perf_counter()
-        evaluation = problem.evaluate(compute_jacobian=True)
+        evaluation = problem.evaluate(EvaluateOptions(parameter_blocks=active_blocks), compute_jacobian=True)
         summary.num_jacobian_evaluations += 1
         cost = float(evaluation.cost.detach().cpu())
         J = evaluation.jacobian
@@ -102,6 +104,7 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
                 -r,
                 solver_type=_effective_linear_solver(options.linear_solver_type),
                 damping=damping,
+                num_eliminate=num_eliminate,
                 max_iterations=options.max_linear_solver_iterations,
                 tolerance=options.eta,
                 preconditioner_type=options.preconditioner_type,
@@ -124,7 +127,7 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
             continue
 
         snapshot = problem.snapshot()
-        problem.apply_delta(step)
+        problem.apply_delta(step, active_blocks=active_blocks)
         candidate = problem.evaluate(compute_jacobian=False)
         summary.num_residual_evaluations += 1
         candidate_cost = float(candidate.cost.detach().cpu())
@@ -178,7 +181,7 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
                 summary.message = "Function tolerance reached."
                 break
             previous_cost = candidate_cost
-            next_eval = problem.evaluate(compute_jacobian=True)
+            next_eval = problem.evaluate(EvaluateOptions(parameter_blocks=active_blocks), compute_jacobian=True)
             if next_eval.gradient is not None and _gradient_converged(torch.max(torch.abs(next_eval.gradient)), options):
                 summary.termination_type = TerminationType.CONVERGENCE
                 summary.message = "Gradient tolerance reached."
@@ -211,7 +214,8 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
 def _line_search_solve(options: SolverOptions, problem: Problem) -> SolverSummary:
     start = time.perf_counter()
     summary = _new_summary(options, problem)
-    initial = problem.evaluate(compute_jacobian=True)
+    active_blocks = _linear_solver_parameter_order(problem)
+    initial = problem.evaluate(EvaluateOptions(parameter_blocks=active_blocks), compute_jacobian=True)
     summary.initial_cost = float(initial.cost.detach().cpu())
     summary.final_cost = summary.initial_cost
     previous_grad: torch.Tensor | None = None
@@ -221,7 +225,7 @@ def _line_search_solve(options: SolverOptions, problem: Problem) -> SolverSummar
     inverse_hessian: torch.Tensor | None = None
 
     for iteration in range(options.max_num_iterations + 1):
-        evaluation = problem.evaluate(compute_jacobian=True)
+        evaluation = problem.evaluate(EvaluateOptions(parameter_blocks=active_blocks), compute_jacobian=True)
         summary.num_jacobian_evaluations += 1
         cost = float(evaluation.cost.detach().cpu())
         g = evaluation.gradient
@@ -274,8 +278,8 @@ def _line_search_solve(options: SolverOptions, problem: Problem) -> SolverSummar
             trial_derivative = torch.dot(g, trial_direction)
             for ls_iter in range(options.max_num_line_search_step_size_iterations):
                 problem.restore(snapshot)
-                problem.apply_delta(step_size * trial_direction)
-                candidate = problem.evaluate(compute_jacobian=True)
+                problem.apply_delta(step_size * trial_direction, active_blocks=active_blocks)
+                candidate = problem.evaluate(EvaluateOptions(parameter_blocks=active_blocks), compute_jacobian=True)
                 summary.num_jacobian_evaluations += 1
                 trial_evaluations += 1
                 candidate_cost = float(candidate.cost.detach().cpu())
@@ -313,7 +317,7 @@ def _line_search_solve(options: SolverOptions, problem: Problem) -> SolverSummar
             summary.message = "Line search failed to find a decreasing step."
             break
         if accepted_gradient is None:
-            accepted_evaluation = problem.evaluate(compute_jacobian=True)
+            accepted_evaluation = problem.evaluate(EvaluateOptions(parameter_blocks=active_blocks), compute_jacobian=True)
             summary.num_jacobian_evaluations += 1
             accepted_gradient = accepted_evaluation.gradient if accepted_evaluation.gradient is not None else g.new_zeros(g.shape)
             summary.final_cost = float(accepted_evaluation.cost.detach().cpu())
@@ -382,9 +386,41 @@ def _new_summary(options: SolverOptions, problem: Problem) -> SolverSummary:
     )
 
 
+def _linear_solver_parameter_order(problem: Problem) -> list[ParameterBlock]:
+    blocks = [b for b in problem.parameter_blocks if b.tangent_size > 0]
+    if not any(b.ordering_group is not None for b in blocks):
+        return blocks
+    max_group = max((b.ordering_group for b in blocks if b.ordering_group is not None), default=0)
+    original_index = {block: i for i, block in enumerate(blocks)}
+    return sorted(
+        blocks,
+        key=lambda block: (
+            block.ordering_group if block.ordering_group is not None else max_group + 1,
+            original_index[block],
+        ),
+    )
+
+
+def _num_eliminate_for_schur(blocks: list[ParameterBlock], solver_type: LinearSolverType) -> int:
+    if solver_type not in {
+        LinearSolverType.DENSE_SCHUR,
+        LinearSolverType.ITERATIVE_SCHUR,
+        LinearSolverType.SPARSE_SCHUR,
+    }:
+        return 0
+    if not blocks or blocks[0].ordering_group is None:
+        return 0
+    first_group = blocks[0].ordering_group
+    if not any(block.ordering_group != first_group for block in blocks):
+        return 0
+    return sum(block.tangent_size for block in blocks if block.ordering_group == first_group)
+
+
 def _effective_linear_solver(requested: LinearSolverType) -> LinearSolverType:
-    if requested in {LinearSolverType.SPARSE_NORMAL_CHOLESKY, LinearSolverType.SPARSE_SCHUR}:
+    if requested is LinearSolverType.SPARSE_NORMAL_CHOLESKY:
         return LinearSolverType.DENSE_NORMAL_CHOLESKY
+    if requested is LinearSolverType.SPARSE_SCHUR:
+        return LinearSolverType.DENSE_SCHUR
     if requested in {LinearSolverType.DENSE_SCHUR, LinearSolverType.ITERATIVE_SCHUR}:
         return requested
     return requested

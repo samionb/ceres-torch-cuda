@@ -110,6 +110,36 @@ def test_solve_line_search_direction_modes_converge_on_rosenbrock(
     torch.testing.assert_close(x, torch.tensor([1.0, 1.0], dtype=torch.float64), atol=1e-4, rtol=1e-4)
 
 
+def test_dense_schur_respects_parameter_ordering_groups() -> None:
+    camera = torch.tensor([0.0], dtype=torch.float64)
+    point = torch.tensor([0.0], dtype=torch.float64)
+    problem = tc.Problem()
+    problem.AddParameterBlock(camera)
+    problem.AddParameterBlock(point)
+    problem.SetParameterBlockOrderingGroup(point, 0)
+    problem.SetParameterBlockOrderingGroup(camera, 1)
+    problem.AddResidualBlock(
+        tc.AutoDiffCostFunction(lambda point, camera: torch.stack([point[0] + camera[0] - 3.0, 2.0 * point[0] - camera[0]]), [1, 1], 2),
+        None,
+        [point, camera],
+    )
+
+    summary = tc.solve(
+        tc.SolverOptions(
+            linear_solver_type=tc.LinearSolverType.DENSE_SCHUR,
+            max_num_iterations=25,
+            gradient_tolerance=1e-12,
+        ),
+        problem,
+    )
+
+    assert summary.IsSolutionUsable()
+    assert summary.linear_solver_type_used is tc.LinearSolverType.DENSE_SCHUR
+    assert problem.GetParameterBlockOrderingGroup(point) == 0
+    torch.testing.assert_close(point, torch.tensor([1.0], dtype=torch.float64), atol=1e-6, rtol=1e-6)
+    torch.testing.assert_close(camera, torch.tensor([2.0], dtype=torch.float64), atol=1e-6, rtol=1e-6)
+
+
 def test_powell_function_converges() -> None:
     x1 = torch.tensor([3.0], dtype=torch.float64)
     x2 = torch.tensor([-1.0], dtype=torch.float64)

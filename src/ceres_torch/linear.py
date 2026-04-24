@@ -36,6 +36,7 @@ def solve_linear_system(
     *,
     solver_type: LinearSolverType = LinearSolverType.DENSE_QR,
     damping: Optional[torch.Tensor] = None,
+    num_eliminate: int = 0,
     max_iterations: int = 500,
     tolerance: float = 1e-10,
     preconditioner_type: PreconditionerType = PreconditionerType.JACOBI,
@@ -43,6 +44,12 @@ def solve_linear_system(
     if A.numel() == 0:
         x = b.new_zeros(b.shape)
         return LinearSolverResult(x, LinearSolverSummary(0.0, 0, True, "empty system"))
+
+    if solver_type is LinearSolverType.DENSE_SCHUR or (
+        solver_type is LinearSolverType.ITERATIVE_SCHUR and num_eliminate > 0
+    ):
+        x = schur_solve_dense(A, b, num_eliminate, damping=damping)
+        return _summarize_solution(A, b, x, 1, "dense schur")
 
     if solver_type in {LinearSolverType.CGNR, LinearSolverType.ITERATIVE_SCHUR}:
         return conjugate_gradient_normal_equations(
@@ -59,9 +66,13 @@ def solve_linear_system(
         if backend_name in _optional_backends:
             x = _optional_backends[backend_name](A, b)
             return _summarize_solution(A, b, x, 1, "optional sparse backend")
-        solver_type = LinearSolverType.DENSE_NORMAL_CHOLESKY
+        solver_type = LinearSolverType.DENSE_SCHUR if solver_type is LinearSolverType.SPARSE_SCHUR else LinearSolverType.DENSE_NORMAL_CHOLESKY
 
-    if solver_type is LinearSolverType.DENSE_NORMAL_CHOLESKY or solver_type is LinearSolverType.DENSE_SCHUR:
+    if solver_type is LinearSolverType.DENSE_SCHUR:
+        x = schur_solve_dense(A, b, num_eliminate, damping=damping)
+        return _summarize_solution(A, b, x, 1, "dense schur")
+
+    if solver_type is LinearSolverType.DENSE_NORMAL_CHOLESKY:
         lhs = A.T @ A
         rhs = A.T @ b
         if damping is not None:
@@ -169,23 +180,46 @@ def dogleg_step(J: torch.Tensor, r: torch.Tensor, radius: float) -> torch.Tensor
     return sd + tau * diff
 
 
-def schur_solve_dense(J: torch.Tensor, r: torch.Tensor, num_eliminate: int) -> torch.Tensor:
-    if num_eliminate <= 0 or num_eliminate >= J.shape[1]:
-        return torch.linalg.lstsq(J, -r).solution
-    A = J[:, :num_eliminate]
-    B = J[:, num_eliminate:]
-    Haa = A.T @ A
-    Hab = A.T @ B
-    Hbb = B.T @ B
-    ga = A.T @ r
-    gb = B.T @ r
-    Haa_inv_Hab = torch.linalg.solve(Haa, Hab)
-    Haa_inv_ga = torch.linalg.solve(Haa, ga)
-    S = Hbb - Hab.T @ Haa_inv_Hab
-    rhs_b = -(gb - Hab.T @ Haa_inv_ga)
-    xb = torch.linalg.solve(S, rhs_b)
-    xa = -Haa_inv_ga - Haa_inv_Hab @ xb
+def schur_solve_dense(
+    A: torch.Tensor,
+    b: torch.Tensor,
+    num_eliminate: int,
+    *,
+    damping: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    if num_eliminate <= 0 or num_eliminate >= A.shape[1]:
+        if damping is not None:
+            D = torch.diag(torch.sqrt(torch.clamp(damping.reshape(-1), min=0.0)))
+            A = torch.cat([A, D], dim=0)
+            b = torch.cat([b.reshape(-1), b.new_zeros(D.shape[0])], dim=0)
+        return torch.linalg.lstsq(A, b.reshape(-1)).solution.reshape(-1)
+
+    H = A.T @ A
+    rhs = A.T @ b.reshape(-1)
+    if damping is not None:
+        H = H + torch.diag(damping.reshape(-1))
+
+    Haa = H[:num_eliminate, :num_eliminate]
+    Hab = H[:num_eliminate, num_eliminate:]
+    Hba = H[num_eliminate:, :num_eliminate]
+    Hbb = H[num_eliminate:, num_eliminate:]
+    ga = rhs[:num_eliminate]
+    gb = rhs[num_eliminate:]
+
+    Haa_inv_Hab = _solve_square_system(Haa, Hab)
+    Haa_inv_ga = _solve_square_system(Haa, ga)
+    S = Hbb - Hba @ Haa_inv_Hab
+    rhs_b = gb - Hba @ Haa_inv_ga
+    xb = _solve_square_system(S, rhs_b)
+    xa = Haa_inv_ga - Haa_inv_Hab @ xb
     return torch.cat([xa, xb])
+
+
+def _solve_square_system(A: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    try:
+        return torch.linalg.solve(A, b)
+    except RuntimeError:
+        return torch.linalg.lstsq(A, b).solution
 
 
 def _summarize_solution(
@@ -199,4 +233,3 @@ def _summarize_solution(
 ) -> LinearSolverResult:
     residual_norm = float(torch.linalg.norm(A @ x.reshape(-1) - b.reshape(-1)).detach().cpu())
     return LinearSolverResult(x.reshape(-1), LinearSolverSummary(residual_norm, iterations, success, message))
-

@@ -241,6 +241,16 @@ class Problem:
 
     SetBounds = set_bounds
 
+    def set_parameter_block_ordering_group(self, parameter_block: ParameterBlock | torch.Tensor, group: Optional[int]) -> None:
+        self._coerce_parameter_block(parameter_block).ordering_group = group
+
+    SetParameterBlockOrderingGroup = set_parameter_block_ordering_group
+
+    def get_parameter_block_ordering_group(self, parameter_block: ParameterBlock | torch.Tensor) -> Optional[int]:
+        return self._require_parameter_block(parameter_block).ordering_group
+
+    GetParameterBlockOrderingGroup = get_parameter_block_ordering_group
+
     def set_parameter_lower_bound(self, parameter_block: ParameterBlock | torch.Tensor, index: int, lower: float) -> None:
         block = self._coerce_parameter_block(parameter_block)
         lb = (

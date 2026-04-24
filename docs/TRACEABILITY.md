@@ -20,7 +20,7 @@ areas. Status values:
 | Trust region minimizer | `trust_region_minimizer.cc` | `ceres_torch.solver` | partial | LM and dogleg convergence on Ceres examples |
 | Line search minimizer | `line_search_minimizer.cc` | `ceres_torch.gradient_solver`, `solver` | partial | Armijo/Wolfe, steepest, NCG, BFGS/LBFGS coverage in first/least-squares solvers |
 | Dense linear solvers | dense QR/Cholesky files | `ceres_torch.linear` | partial | QR/Cholesky residual norms match Ceres tolerances |
-| Sparse/Schur solvers | Schur, CGNR, sparse Cholesky files | `ceres_torch.linear`, `schur` | partial | Pure PyTorch iterative paths; direct sparse via optional backends |
+| Sparse/Schur solvers | Schur, CGNR, sparse Cholesky files | `ceres_torch.linear`, `schur` | partial | Dense Schur with ordering, pure PyTorch iterative paths; direct sparse via optional backends |
 | Preconditioners | Jacobi, Schur, cluster, subset files | `ceres_torch.linear` | partial | Identity/Jacobi implemented; Schur/cluster/subset parity planned |
 | Covariance | `covariance.h`, `covariance_impl.cc` | `ceres_torch.covariance` | partial | Dense SVD covariance blocks and rank policy; sparse QR backend planned |
 | GradientProblemSolver | `gradient_problem_solver.h` | `ceres_torch.gradient_solver` | partial | General unconstrained minimization with line search |
