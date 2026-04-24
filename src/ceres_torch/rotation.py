@@ -43,6 +43,10 @@ def cross_product(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     return torch.linalg.cross(a, b, dim=-1)
 
 
+def dot_product(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    return torch.sum(a * b, dim=-1)
+
+
 def angle_axis_to_quaternion(angle_axis: torch.Tensor) -> torch.Tensor:
     theta = torch.linalg.norm(angle_axis, dim=-1, keepdim=True)
     half = 0.5 * theta
@@ -63,12 +67,25 @@ def quaternion_to_angle_axis(q: torch.Tensor) -> torch.Tensor:
 
 def quaternion_to_rotation_matrix(q: torch.Tensor) -> torch.Tensor:
     q = normalize_quaternion(q)
+    return quaternion_to_scaled_rotation_matrix(q)
+
+
+def quaternion_to_scaled_rotation_matrix(q: torch.Tensor) -> torch.Tensor:
     w, x, y, z = q.unbind(-1)
     two = torch.as_tensor(2.0, dtype=q.dtype, device=q.device)
-    row0 = torch.stack([1 - two * (y * y + z * z), two * (x * y - z * w), two * (x * z + y * w)], dim=-1)
-    row1 = torch.stack([two * (x * y + z * w), 1 - two * (x * x + z * z), two * (y * z - x * w)], dim=-1)
-    row2 = torch.stack([two * (x * z - y * w), two * (y * z + x * w), 1 - two * (x * x + y * y)], dim=-1)
+    norm_sq = w * w + x * x + y * y + z * z
+    row0 = torch.stack([norm_sq - two * (y * y + z * z), two * (x * y - z * w), two * (x * z + y * w)], dim=-1)
+    row1 = torch.stack([two * (x * y + z * w), norm_sq - two * (x * x + z * z), two * (y * z - x * w)], dim=-1)
+    row2 = torch.stack([two * (x * z - y * w), two * (y * z + x * w), norm_sq - two * (x * x + y * y)], dim=-1)
     return torch.stack([row0, row1, row2], dim=-2)
+
+
+def quaternion_to_rotation(q: torch.Tensor) -> torch.Tensor:
+    return quaternion_to_rotation_matrix(q)
+
+
+def quaternion_to_scaled_rotation(q: torch.Tensor) -> torch.Tensor:
+    return quaternion_to_scaled_rotation_matrix(q)
 
 
 def angle_axis_to_rotation_matrix(angle_axis: torch.Tensor) -> torch.Tensor:
@@ -115,9 +132,101 @@ def rotation_matrix_rotate_point(matrix: torch.Tensor, point: torch.Tensor) -> t
     return torch.matmul(matrix, point.unsqueeze(-1)).squeeze(-1)
 
 
+def euler_angles_to_rotation_matrix(euler_degrees: torch.Tensor) -> torch.Tensor:
+    """Ceres legacy Euler helper: X/Y/Z angles in degrees, applied as Rz Ry Rx."""
+
+    radians = euler_degrees * (torch.pi / 180.0)
+    return euler_angles_to_rotation(radians, axes="XYZ", intrinsic=False)
+
+
+def rotation_matrix_to_euler_angles(matrix: torch.Tensor) -> torch.Tensor:
+    """Inverse of :func:`euler_angles_to_rotation_matrix` for the Ceres legacy convention."""
+
+    m = matrix
+    cy = torch.hypot(m[..., 0, 0], m[..., 1, 0])
+    zero = torch.zeros_like(cy)
+    regular_x = torch.atan2(m[..., 2, 1], m[..., 2, 2])
+    regular_y = torch.atan2(-m[..., 2, 0], cy)
+    regular_z = torch.atan2(m[..., 1, 0], m[..., 0, 0])
+    singular_x = torch.atan2(-m[..., 1, 2], m[..., 1, 1])
+    singular_y = torch.atan2(-m[..., 2, 0], cy)
+    singular = cy <= _eps_like(cy)
+    angles = torch.stack(
+        [
+            torch.where(singular, singular_x, regular_x),
+            torch.where(singular, singular_y, regular_y),
+            torch.where(singular, zero, regular_z),
+        ],
+        dim=-1,
+    )
+    return angles * (180.0 / torch.pi)
+
+
+def euler_angles_to_rotation(
+    euler_radians: torch.Tensor,
+    *,
+    axes: str = "XYZ",
+    intrinsic: bool = False,
+) -> torch.Tensor:
+    if len(axes) != 3 or any(axis.upper() not in {"X", "Y", "Z"} for axis in axes):
+        raise ValueError("axes must be a three-character string containing only X, Y, and Z")
+    angles = euler_radians.reshape(*euler_radians.shape[:-1], 3)
+    matrices = [_axis_rotation_matrix(angles[..., i], axis.upper()) for i, axis in enumerate(axes)]
+    result = torch.eye(3, dtype=euler_radians.dtype, device=euler_radians.device).expand(angles.shape[:-1] + (3, 3))
+    order = matrices if intrinsic else list(reversed(matrices))
+    for matrix in order:
+        result = result @ matrix
+    return result
+
+
+def _axis_rotation_matrix(angle: torch.Tensor, axis: str) -> torch.Tensor:
+    c = torch.cos(angle)
+    s = torch.sin(angle)
+    one = torch.ones_like(angle)
+    zero = torch.zeros_like(angle)
+    if axis == "X":
+        rows = [
+            torch.stack([one, zero, zero], dim=-1),
+            torch.stack([zero, c, -s], dim=-1),
+            torch.stack([zero, s, c], dim=-1),
+        ]
+    elif axis == "Y":
+        rows = [
+            torch.stack([c, zero, s], dim=-1),
+            torch.stack([zero, one, zero], dim=-1),
+            torch.stack([-s, zero, c], dim=-1),
+        ]
+    else:
+        rows = [
+            torch.stack([c, -s, zero], dim=-1),
+            torch.stack([s, c, zero], dim=-1),
+            torch.stack([zero, zero, one], dim=-1),
+        ]
+    return torch.stack(rows, dim=-2)
+
+
 def convert_ceres_to_eigen_quaternion(q: torch.Tensor) -> torch.Tensor:
     return torch.cat([q[..., 1:], q[..., :1]], dim=-1)
 
 
 def convert_eigen_to_ceres_quaternion(q: torch.Tensor) -> torch.Tensor:
     return torch.cat([q[..., 3:], q[..., :3]], dim=-1)
+
+
+AngleAxisToQuaternion = angle_axis_to_quaternion
+QuaternionToAngleAxis = quaternion_to_angle_axis
+RotationMatrixToQuaternion = rotation_matrix_to_quaternion
+RotationMatrixToAngleAxis = rotation_matrix_to_angle_axis
+AngleAxisToRotationMatrix = angle_axis_to_rotation_matrix
+EulerAnglesToRotationMatrix = euler_angles_to_rotation_matrix
+EulerAnglesToRotation = euler_angles_to_rotation
+RotationMatrixToEulerAngles = rotation_matrix_to_euler_angles
+QuaternionToScaledRotation = quaternion_to_scaled_rotation
+QuaternionToRotation = quaternion_to_rotation
+UnitQuaternionRotatePoint = unit_quaternion_rotate_point
+QuaternionRotatePoint = quaternion_rotate_point
+QuaternionProduct = quaternion_product
+QuaternionConjugate = quaternion_conjugate
+CrossProduct = cross_product
+DotProduct = dot_product
+AngleAxisRotatePoint = angle_axis_rotate_point

@@ -76,3 +76,34 @@ def test_quaternion_inverse_and_cross_product() -> None:
     a = torch.tensor([1.0, 0.0, 0.0], dtype=torch.float64)
     b = torch.tensor([0.0, 1.0, 0.0], dtype=torch.float64)
     torch.testing.assert_close(tc.cross_product(a, b), torch.tensor([0.0, 0.0, 1.0], dtype=torch.float64))
+    torch.testing.assert_close(tc.dot_product(a, b), torch.tensor(0.0, dtype=torch.float64))
+
+
+def test_quaternion_scaled_rotation_matches_ceres_semantics() -> None:
+    q = torch.tensor([2.0, 0.0, 0.0, 0.0], dtype=torch.float64)
+    torch.testing.assert_close(tc.quaternion_to_scaled_rotation_matrix(q), 4.0 * torch.eye(3, dtype=torch.float64))
+    torch.testing.assert_close(tc.quaternion_to_rotation_matrix(q), torch.eye(3, dtype=torch.float64))
+    torch.testing.assert_close(tc.QuaternionToScaledRotation(q), tc.quaternion_to_scaled_rotation_matrix(q))
+    torch.testing.assert_close(tc.QuaternionToRotation(q), tc.quaternion_to_rotation_matrix(q))
+
+
+def test_ceres_style_rotation_aliases_and_euler_roundtrip() -> None:
+    euler = torch.tensor([10.0, -20.0, 30.0], dtype=torch.float64)
+    matrix = tc.EulerAnglesToRotationMatrix(euler)
+    recovered = tc.RotationMatrixToEulerAngles(matrix)
+
+    torch.testing.assert_close(recovered, euler, atol=1e-9, rtol=1e-9)
+    torch.testing.assert_close(tc.RotationMatrixToQuaternion(matrix), tc.rotation_matrix_to_quaternion(matrix))
+    torch.testing.assert_close(
+        tc.AngleAxisToRotationMatrix(tc.RotationMatrixToAngleAxis(matrix)),
+        matrix,
+        atol=1e-8,
+        rtol=1e-8,
+    )
+
+
+def test_generic_euler_rotation_axes_support_batches() -> None:
+    angles = torch.tensor([[0.1, 0.2, 0.3], [-0.2, 0.4, -0.1]], dtype=torch.float64)
+    rotations = tc.EulerAnglesToRotation(angles, axes="ZYX", intrinsic=True)
+    identity = torch.eye(3, dtype=torch.float64).expand(2, 3, 3)
+    torch.testing.assert_close(rotations @ rotations.transpose(-1, -2), identity, atol=1e-10, rtol=1e-10)
