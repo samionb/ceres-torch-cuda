@@ -26,7 +26,7 @@ from .costs import (
     NumericDiffCostFunction,
     NumericDiffFirstOrderFunction,
 )
-from .covariance import Covariance, CovarianceOptions
+from .covariance import Covariance, CovarianceOptions, CovarianceSummary
 from .cuda_backends import (
     CudaExtensionInfo,
     cuda_block_schur,

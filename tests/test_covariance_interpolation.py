@@ -1,4 +1,5 @@
 import torch
+import pytest
 
 import ceres_torch as tc
 
@@ -12,6 +13,10 @@ def test_covariance_dense_svd_block() -> None:
     assert covariance.compute([(block, block)], problem)
     cov = covariance.get_covariance_block(block, block)
     torch.testing.assert_close(cov, torch.tensor([[0.25]], dtype=torch.float64), atol=1e-9, rtol=1e-9)
+    assert covariance.summary.success
+    assert covariance.Rank() == 1
+    assert covariance.Nullity() == 0
+    assert covariance.ReciprocalConditionNumber() == 1.0
 
 
 def test_covariance_rank_deficiency_policy() -> None:
@@ -24,6 +29,9 @@ def test_covariance_rank_deficiency_policy() -> None:
 
     strict = tc.Covariance(tc.CovarianceOptions(algorithm_type=tc.CovarianceAlgorithmType.DENSE_SVD))
     assert not strict.compute([(bx, bx), (by, by)], problem)
+    assert strict.summary.rank == 1
+    assert strict.summary.nullity == 1
+    assert "rank deficient" in strict.summary.message
 
     pseudo_inverse = tc.Covariance(
         tc.CovarianceOptions(algorithm_type=tc.CovarianceAlgorithmType.DENSE_SVD, null_space_rank=-1)
@@ -31,6 +39,46 @@ def test_covariance_rank_deficiency_policy() -> None:
     assert pseudo_inverse.compute([(bx, bx), (by, by), (bx, by)], problem)
     matrix = pseudo_inverse.get_covariance_matrix_in_tangent_space([bx, by])
     torch.testing.assert_close(matrix, torch.full((2, 2), 0.25, dtype=torch.float64), atol=1e-9, rtol=1e-9)
+    assert pseudo_inverse.summary.rank == 1
+    assert pseudo_inverse.summary.nullity == 1
+
+
+def test_covariance_options_validate() -> None:
+    with pytest.raises(ValueError, match="null_space_rank"):
+        tc.CovarianceOptions(null_space_rank=-2).validate()
+    with pytest.raises(ValueError, match="min_reciprocal_condition_number"):
+        tc.CovarianceOptions(min_reciprocal_condition_number=-1.0).validate()
+
+
+def test_covariance_near_singular_uses_eigenvalue_ratio_policy() -> None:
+    x = torch.zeros(2, dtype=torch.float64)
+    problem = tc.Problem()
+    block = problem.add_parameter_block(x)
+    A = torch.tensor([[1.0, 0.0], [0.0, 1e-4]], dtype=torch.float64)
+    problem.add_residual_block(tc.NormalPrior(A, torch.zeros(2, dtype=torch.float64)), None, [x])
+
+    strict = tc.Covariance(
+        tc.CovarianceOptions(
+            algorithm_type=tc.CovarianceAlgorithmType.DENSE_SVD,
+            min_reciprocal_condition_number=1e-6,
+        )
+    )
+    assert not strict.compute([(block, block)], problem)
+    assert strict.summary.rank == 2
+    assert strict.summary.reciprocal_condition_number < 1e-6
+
+    truncated = tc.Covariance(
+        tc.CovarianceOptions(
+            algorithm_type=tc.CovarianceAlgorithmType.DENSE_SVD,
+            min_reciprocal_condition_number=1e-6,
+            null_space_rank=-1,
+        )
+    )
+    assert truncated.compute([(block, block)], problem)
+    cov = truncated.get_covariance_block(block, block)
+    torch.testing.assert_close(cov, torch.diag(torch.tensor([1.0, 0.0], dtype=torch.float64)))
+    assert truncated.summary.rank == 1
+    assert truncated.summary.nullity == 1
 
 
 def test_covariance_respects_apply_loss_function_option() -> None:

@@ -22,7 +22,7 @@ areas. Status values:
 | Dense linear solvers | dense QR/Cholesky files | `ceres_torch.linear` | partial | QR/Cholesky residual norms match Ceres tolerances |
 | Sparse/Schur solvers | Schur, CGNR, sparse Cholesky files | `ceres_torch.linear`, `schur`, `sparse_backends`, `cuda_backends`, `native/cuda` | partial | Dense Schur with ordering, pure PyTorch iterative paths, SciPy/SuperLU sparse normal and Schur backend, PyTorch CUDA sparse/block-Schur backend, opt-in native CUDA extension |
 | Preconditioners | Jacobi, Schur, cluster, subset files | `ceres_torch.linear` | partial | Identity/Jacobi plus pure-core diagonal Schur/cluster/subset aliases; exact block forms planned |
-| Covariance | `covariance.h`, `covariance_impl.cc` | `ceres_torch.covariance`, `sparse_backends` | partial | Dense SVD/QR covariance blocks, loss toggle, constants, rank policy, SciPy/SuperLU sparse direct covariance backend |
+| Covariance | `covariance.h`, `covariance_impl.cc` | `ceres_torch.covariance`, `sparse_backends` | partial | Dense SVD/QR covariance blocks, loss toggle, constants, Ceres eigenvalue-ratio rank policy, rank summary, SciPy/SuperLU sparse direct covariance backend |
 | GradientProblemSolver | `gradient_problem_solver.h` | `ceres_torch.gradient_solver` | partial | General unconstrained minimization with validation, reports, counters, line search |
 | Callbacks/logging | `iteration_callback.h`, callbacks files | `ceres_torch.callbacks` | implemented | Iteration/evaluation callback behavior and summary visibility |
 | Tiny solver | `tiny_solver.h` | `ceres_torch.tiny_solver` | partial | Small fixed-size LM parity with summary/report API |
@@ -42,8 +42,8 @@ areas. Status values:
    needed primitive directly.
 3. Port generated bundle-adjustment solver matrix tests and compare against the
    local Ceres binaries once built using `GoldenSolverResult` assertions.
-4. Fill exact Ceres covariance sparse QR behavior, rank-deficiency policy, and
-   gauge-invariance examples.
+4. Fill exact Ceres covariance sparse QR behavior and broader gauge-invariance
+   examples beyond the dense rank/nullity policy now covered.
 5. Port all examples under `C:\Git\ceres-solver\examples` and all public helper
    tests under `internal/ceres/*test.cc`.
 
