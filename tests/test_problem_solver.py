@@ -1,4 +1,5 @@
 import torch
+import pytest
 
 import ceres_torch as tc
 
@@ -65,6 +66,47 @@ def test_gradient_problem_bfgs_direction() -> None:
     )
     summary = tc.gradient_solve(options, problem, x)
     assert summary.IsSolutionUsable()
+    torch.testing.assert_close(x, torch.tensor([1.0, 1.0], dtype=torch.float64), atol=1e-4, rtol=1e-4)
+
+
+@pytest.mark.parametrize(
+    "direction_type,ncg_type",
+    [
+        (tc.LineSearchDirectionType.LBFGS, None),
+        (tc.LineSearchDirectionType.BFGS, None),
+        (
+            tc.LineSearchDirectionType.NONLINEAR_CONJUGATE_GRADIENT,
+            tc.NonlinearConjugateGradientType.POLAK_RIBIERE,
+        ),
+    ],
+)
+def test_solve_line_search_direction_modes_converge_on_rosenbrock(
+    direction_type: tc.LineSearchDirectionType,
+    ncg_type: tc.NonlinearConjugateGradientType | None,
+) -> None:
+    x = torch.tensor([-1.2, 1.0], dtype=torch.float64)
+    problem = tc.Problem()
+    problem.AddResidualBlock(
+        tc.AutoDiffCostFunction(lambda x: torch.stack([1.0 - x[0], 10.0 * (x[1] - x[0] ** 2)]), [2], 2),
+        None,
+        [x],
+    )
+    options = tc.SolverOptions(
+        minimizer_type=tc.MinimizerType.LINE_SEARCH,
+        line_search_direction_type=direction_type,
+        line_search_type=tc.LineSearchType.WOLFE,
+        max_num_iterations=250,
+        function_tolerance=1e-12,
+        gradient_tolerance=1e-8,
+        parameter_tolerance=1e-12,
+    )
+    if ncg_type is not None:
+        options.nonlinear_conjugate_gradient_type = ncg_type
+
+    summary = tc.solve(options, problem)
+
+    assert summary.IsSolutionUsable()
+    assert summary.line_search_direction_type is direction_type
     torch.testing.assert_close(x, torch.tensor([1.0, 1.0], dtype=torch.float64), atol=1e-4, rtol=1e-4)
 
 

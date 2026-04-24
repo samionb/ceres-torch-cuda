@@ -18,7 +18,7 @@ areas. Status values:
 | Rotation helpers | `rotation.h` | `ceres_torch.rotation` | partial | Angle-axis, quaternion, matrix conversions and point rotation |
 | Interpolation | `cubic_interpolation.h` | `ceres_torch.interpolation` | partial | Cubic/bicubic sample values and derivatives |
 | Trust region minimizer | `trust_region_minimizer.cc` | `ceres_torch.solver` | partial | LM and dogleg convergence on Ceres examples |
-| Line search minimizer | `line_search_minimizer.cc` | `ceres_torch.gradient_solver`, `solver` | partial | Armijo/Wolfe, steepest, NCG, BFGS/LBFGS parity |
+| Line search minimizer | `line_search_minimizer.cc` | `ceres_torch.gradient_solver`, `solver` | partial | Armijo/Wolfe, steepest, NCG, BFGS/LBFGS coverage in first/least-squares solvers |
 | Dense linear solvers | dense QR/Cholesky files | `ceres_torch.linear` | partial | QR/Cholesky residual norms match Ceres tolerances |
 | Sparse/Schur solvers | Schur, CGNR, sparse Cholesky files | `ceres_torch.linear`, `schur` | partial | Pure PyTorch iterative paths; direct sparse via optional backends |
 | Preconditioners | Jacobi, Schur, cluster, subset files | `ceres_torch.linear` | partial | Identity/Jacobi implemented; Schur/cluster/subset parity planned |

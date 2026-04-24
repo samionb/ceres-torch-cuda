@@ -9,8 +9,11 @@ from .problem import Problem
 from .types import (
     CallbackReturnType,
     IterationSummary,
+    LineSearchDirectionType,
+    LineSearchType,
     LinearSolverType,
     MinimizerType,
+    NonlinearConjugateGradientType,
     SolverOptions,
     SolverSummary,
     TerminationType,
@@ -211,6 +214,11 @@ def _line_search_solve(options: SolverOptions, problem: Problem) -> SolverSummar
     initial = problem.evaluate(compute_jacobian=True)
     summary.initial_cost = float(initial.cost.detach().cpu())
     summary.final_cost = summary.initial_cost
+    previous_grad: torch.Tensor | None = None
+    previous_direction: torch.Tensor | None = None
+    s_history: list[torch.Tensor] = []
+    y_history: list[torch.Tensor] = []
+    inverse_hessian: torch.Tensor | None = None
 
     for iteration in range(options.max_num_iterations + 1):
         evaluation = problem.evaluate(compute_jacobian=True)
@@ -235,33 +243,124 @@ def _line_search_solve(options: SolverOptions, problem: Problem) -> SolverSummar
             summary.termination_type = TerminationType.NO_CONVERGENCE
             summary.message = "Maximum iterations reached."
             break
-        direction = -g
+        if inverse_hessian is None or inverse_hessian.shape[0] != g.numel():
+            inverse_hessian = torch.eye(g.numel(), dtype=g.dtype, device=g.device)
+        direction = _line_search_direction(
+            options,
+            g,
+            previous_grad,
+            previous_direction,
+            s_history,
+            y_history,
+            inverse_hessian,
+        )
         directional_derivative = torch.dot(g, direction)
-        step_size = 1.0
+        if directional_derivative >= 0:
+            direction = -g
+            directional_derivative = -torch.dot(g, g)
+            s_history.clear()
+            y_history.clear()
+            inverse_hessian = torch.eye(g.numel(), dtype=g.dtype, device=g.device)
         accepted = False
         snapshot = problem.snapshot()
-        for ls_iter in range(options.max_num_line_search_step_size_iterations):
-            problem.restore(snapshot)
-            problem.apply_delta(step_size * direction)
-            candidate = problem.evaluate(compute_jacobian=False)
-            candidate_cost = float(candidate.cost.detach().cpu())
-            summary.num_residual_evaluations += 1
-            if candidate_cost <= cost + options.line_search_sufficient_function_decrease * step_size * float(directional_derivative.detach().cpu()):
-                accepted = True
-                summary.final_cost = candidate_cost
-                iter_summary.step_size = step_size
-                iter_summary.line_search_iterations = ls_iter + 1
-                iter_summary.step_is_successful = True
-                summary.num_successful_steps += 1
-                break
-            step_size *= options.min_line_search_step_contraction
-            if step_size < options.min_line_search_step_size:
+        accepted_direction = direction
+        accepted_gradient: torch.Tensor | None = None
+        directions = [direction]
+        trial_evaluations = 0
+        if not torch.allclose(direction, -g):
+            directions.append(-g)
+        for trial_direction in directions:
+            step_size = 1.0
+            trial_derivative = torch.dot(g, trial_direction)
+            for ls_iter in range(options.max_num_line_search_step_size_iterations):
+                problem.restore(snapshot)
+                problem.apply_delta(step_size * trial_direction)
+                candidate = problem.evaluate(compute_jacobian=True)
+                summary.num_jacobian_evaluations += 1
+                trial_evaluations += 1
+                candidate_cost = float(candidate.cost.detach().cpu())
+                candidate_grad = candidate.gradient if candidate.gradient is not None else g.new_zeros(g.shape)
+                armijo_ok = candidate_cost <= cost + options.line_search_sufficient_function_decrease * step_size * float(trial_derivative.detach().cpu())
+                if options.line_search_type is LineSearchType.WOLFE:
+                    curvature_ok = torch.abs(torch.dot(candidate_grad, trial_direction)) <= (
+                        options.line_search_sufficient_curvature_decrease * torch.abs(trial_derivative)
+                    )
+                else:
+                    curvature_ok = True
+                if armijo_ok and curvature_ok:
+                    accepted = True
+                    accepted_direction = trial_direction
+                    accepted_gradient = candidate_grad.detach()
+                    summary.final_cost = candidate_cost
+                    iter_summary.step_size = step_size
+                    iter_summary.line_search_iterations = ls_iter + 1
+                    iter_summary.line_search_function_evaluations = trial_evaluations
+                    iter_summary.line_search_gradient_evaluations = trial_evaluations
+                    iter_summary.step_norm = float(torch.linalg.norm(step_size * trial_direction).detach().cpu())
+                    iter_summary.cost_change = cost - candidate_cost
+                    iter_summary.step_is_successful = True
+                    summary.num_successful_steps += 1
+                    break
+                step_size *= options.min_line_search_step_contraction
+                if step_size < options.min_line_search_step_size:
+                    break
+            if accepted:
                 break
         if not accepted:
             problem.restore(snapshot)
             summary.num_unsuccessful_steps += 1
             summary.termination_type = TerminationType.NO_CONVERGENCE
             summary.message = "Line search failed to find a decreasing step."
+            break
+        if accepted_gradient is None:
+            accepted_evaluation = problem.evaluate(compute_jacobian=True)
+            summary.num_jacobian_evaluations += 1
+            accepted_gradient = accepted_evaluation.gradient if accepted_evaluation.gradient is not None else g.new_zeros(g.shape)
+            summary.final_cost = float(accepted_evaluation.cost.detach().cpu())
+        s = (iter_summary.step_size * accepted_direction).detach()
+        y = (accepted_gradient - g).detach()
+        if _has_positive_curvature(s, y):
+            s_history.append(s)
+            y_history.append(y)
+            if len(s_history) > options.max_lbfgs_rank:
+                s_history.pop(0)
+                y_history.pop(0)
+            if options.line_search_direction_type is LineSearchDirectionType.BFGS and inverse_hessian is not None:
+                inverse_hessian = _bfgs_update(inverse_hessian, s, y)
+        else:
+            s_history.clear()
+            y_history.clear()
+            inverse_hessian = torch.eye(g.numel(), dtype=g.dtype, device=g.device)
+        previous_grad = g.detach()
+        previous_direction = accepted_direction.detach()
+        for callback in options.callbacks:
+            result = callback(iter_summary)
+            if result is CallbackReturnType.SOLVER_ABORT:
+                summary.termination_type = TerminationType.USER_FAILURE
+                summary.message = "User callback aborted."
+                summary.total_time_in_seconds = time.perf_counter() - start
+                return summary
+            if result is CallbackReturnType.SOLVER_TERMINATE_SUCCESSFULLY:
+                summary.termination_type = TerminationType.USER_SUCCESS
+                summary.message = "User callback terminated successfully."
+                summary.total_time_in_seconds = time.perf_counter() - start
+                return summary
+        accepted_grad_max = torch.max(torch.abs(accepted_gradient)) if accepted_gradient.numel() else accepted_gradient.new_tensor(0.0)
+        if _gradient_converged(accepted_grad_max, options):
+            summary.termination_type = TerminationType.CONVERGENCE
+            summary.message = "Gradient tolerance reached."
+            break
+        if _parameter_converged(s, problem, options):
+            summary.termination_type = TerminationType.CONVERGENCE
+            summary.message = "Parameter tolerance reached."
+            break
+        if abs(cost - summary.final_cost) <= options.function_tolerance * max(cost, 1.0):
+            summary.termination_type = TerminationType.CONVERGENCE
+            summary.message = "Function tolerance reached."
+            break
+        if time.perf_counter() - start >= options.max_solver_time_in_seconds:
+            summary.termination_type = TerminationType.NO_CONVERGENCE
+            summary.message = "Maximum solver time reached."
             break
     summary.total_time_in_seconds = time.perf_counter() - start
     return summary
@@ -298,6 +397,82 @@ def _model_decrease(J: torch.Tensor, r: torch.Tensor, step: torch.Tensor) -> flo
     return float(torch.clamp(before - after, min=0.0).detach().cpu())
 
 
+def _line_search_direction(
+    options: SolverOptions,
+    grad: torch.Tensor,
+    previous_grad: torch.Tensor | None,
+    previous_direction: torch.Tensor | None,
+    s_history: list[torch.Tensor],
+    y_history: list[torch.Tensor],
+    inverse_hessian: torch.Tensor | None,
+) -> torch.Tensor:
+    if options.line_search_direction_type is LineSearchDirectionType.STEEPEST_DESCENT:
+        return -grad
+    if (
+        options.line_search_direction_type is LineSearchDirectionType.NONLINEAR_CONJUGATE_GRADIENT
+        and previous_grad is not None
+        and previous_direction is not None
+    ):
+        beta = _nonlinear_conjugate_gradient_beta(options, grad, previous_grad, previous_direction)
+        return -grad + torch.clamp(beta, min=0.0) * previous_direction
+    if options.line_search_direction_type is LineSearchDirectionType.LBFGS and s_history:
+        return _lbfgs_two_loop(grad, s_history, y_history)
+    if options.line_search_direction_type is LineSearchDirectionType.BFGS and inverse_hessian is not None:
+        return -(inverse_hessian @ grad)
+    return -grad
+
+
+def _nonlinear_conjugate_gradient_beta(
+    options: SolverOptions,
+    grad: torch.Tensor,
+    previous_grad: torch.Tensor,
+    previous_direction: torch.Tensor,
+) -> torch.Tensor:
+    eps = torch.finfo(grad.dtype).eps
+    if options.nonlinear_conjugate_gradient_type is NonlinearConjugateGradientType.POLAK_RIBIERE:
+        return torch.dot(grad, grad - previous_grad) / torch.dot(previous_grad, previous_grad).clamp_min(eps)
+    if options.nonlinear_conjugate_gradient_type is NonlinearConjugateGradientType.HESTENES_STIEFEL:
+        y = grad - previous_grad
+        return torch.dot(grad, y) / torch.dot(previous_direction, y).clamp_min(eps)
+    return torch.dot(grad, grad) / torch.dot(previous_grad, previous_grad).clamp_min(eps)
+
+
+def _lbfgs_two_loop(grad: torch.Tensor, s_history: list[torch.Tensor], y_history: list[torch.Tensor]) -> torch.Tensor:
+    q = grad.clone()
+    alphas: list[torch.Tensor] = []
+    rhos: list[torch.Tensor] = []
+    eps = torch.finfo(grad.dtype).eps
+    for s, y in reversed(list(zip(s_history, y_history))):
+        rho = 1.0 / torch.dot(y, s).clamp_min(eps)
+        alpha = rho * torch.dot(s, q)
+        q = q - alpha * y
+        alphas.append(alpha)
+        rhos.append(rho)
+    s, y = s_history[-1], y_history[-1]
+    gamma = torch.dot(s, y) / torch.dot(y, y).clamp_min(eps)
+    r = gamma * q
+    for s, y, alpha, rho in zip(s_history, y_history, reversed(alphas), reversed(rhos)):
+        beta = rho * torch.dot(y, r)
+        r = r + s * (alpha - beta)
+    return -r
+
+
+def _bfgs_update(inverse_hessian: torch.Tensor, s: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    if not _has_positive_curvature(s, y):
+        return torch.eye(inverse_hessian.shape[0], dtype=inverse_hessian.dtype, device=inverse_hessian.device)
+    ys = torch.dot(y, s)
+    rho = 1.0 / ys
+    eye = torch.eye(inverse_hessian.shape[0], dtype=inverse_hessian.dtype, device=inverse_hessian.device)
+    sy = torch.outer(s, y)
+    ys_outer = torch.outer(y, s)
+    return (eye - rho * sy) @ inverse_hessian @ (eye - rho * ys_outer) + rho * torch.outer(s, s)
+
+
+def _has_positive_curvature(s: torch.Tensor, y: torch.Tensor) -> bool:
+    threshold = 10.0 * torch.finfo(s.dtype).eps * torch.linalg.norm(s) * torch.linalg.norm(y)
+    return bool((torch.dot(s, y) > threshold).detach().cpu())
+
+
 def _gradient_converged(grad_max: torch.Tensor, options: SolverOptions) -> bool:
     return bool(float(grad_max.detach().cpu()) <= options.gradient_tolerance)
 
@@ -309,4 +484,3 @@ def _parameter_converged(step: torch.Tensor, problem: Problem, options: SolverOp
     state_norm = state_norm_sq**0.5
     step_norm = float(torch.linalg.norm(step).detach().cpu())
     return step_norm <= options.parameter_tolerance * (state_norm + options.parameter_tolerance)
-
