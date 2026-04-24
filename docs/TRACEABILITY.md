@@ -28,7 +28,7 @@ areas. Status values:
 | Tiny solver | `tiny_solver.h` | `ceres_torch.tiny_solver` | partial | Small fixed-size LM parity with summary/report API |
 | C API | `c_api.h` | Not cloned | planned exception | Python callable/module support replaces C ABI |
 | Examples/data | `examples`, `data` | `examples`, tests | partial | Port all tutorial examples and BAL/NIST/SLAM validations |
-| CUDA | CUDA internal files | PyTorch device + optional backends | partial | CUDA tensors work; extension backends needed for Ceres-scale sparse |
+| CUDA | CUDA internal files | PyTorch device + optional backends | partial | CUDA tensor smoke tests, device helpers, extension backends needed for Ceres-scale sparse |
 
 ## Full-Parity Backlog
 

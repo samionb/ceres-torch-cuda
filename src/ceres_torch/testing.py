@@ -20,3 +20,13 @@ def finite_difference_jacobian(fun, x: torch.Tensor, step: float = 1e-6) -> torc
         columns.append(((fun(xp.reshape_as(x)) - fun(xm.reshape_as(x))).reshape(-1) / (2.0 * h)))
     return torch.stack(columns, dim=1) if columns else base.new_zeros((base.numel(), 0))
 
+
+def cuda_available() -> bool:
+    return bool(torch.cuda.is_available())
+
+
+def test_devices(include_cuda: bool = True) -> list[torch.device]:
+    devices = [torch.device("cpu")]
+    if include_cuda and cuda_available():
+        devices.append(torch.device("cuda"))
+    return devices
