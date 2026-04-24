@@ -5,7 +5,7 @@ from typing import Optional, Sequence
 
 import torch
 
-from .problem import ParameterBlock, Problem
+from .problem import EvaluateOptions, ParameterBlock, Problem
 from .types import CovarianceAlgorithmType, SparseLinearAlgebraLibraryType
 
 
@@ -40,12 +40,15 @@ class Covariance:
             return True
         first = covariance_blocks[0]  # type: ignore[index]
         if isinstance(first, tuple):
-            pairs = [(problem._coerce_parameter_block(a), problem._coerce_parameter_block(b)) for a, b in covariance_blocks]  # type: ignore[misc]
+            pairs = [(problem._require_parameter_block(a), problem._require_parameter_block(b)) for a, b in covariance_blocks]  # type: ignore[misc]
         else:
-            params = [problem._coerce_parameter_block(p) for p in covariance_blocks]  # type: ignore[assignment]
+            params = [problem._require_parameter_block(p) for p in covariance_blocks]  # type: ignore[assignment]
             pairs = [(a, b) for a in params for b in params]
         self._blocks = set(pairs) | {(b, a) for a, b in pairs}
-        evaluation = problem.evaluate(compute_jacobian=True)
+        evaluation = problem.evaluate(
+            EvaluateOptions(apply_loss_function=self.options.apply_loss_function),
+            compute_jacobian=True,
+        )
         if evaluation.jacobian is None:
             return False
         J = evaluation.jacobian
@@ -53,7 +56,12 @@ class Covariance:
         if J.shape[1] == 0:
             self._tangent_covariance = J.new_zeros((0, 0))
             return True
-        U, S, Vh = torch.linalg.svd(J, full_matrices=False)
+        if self.options.algorithm_type is CovarianceAlgorithmType.SPARSE_QR:
+            return self._compute_qr_covariance(J)
+        return self._compute_svd_covariance(J)
+
+    def _compute_svd_covariance(self, J: torch.Tensor) -> bool:
+        _, S, Vh = torch.linalg.svd(J, full_matrices=False)
         if S.numel() == 0:
             return False
         threshold = self._svd_threshold(S, J.shape)
@@ -68,13 +76,35 @@ class Covariance:
             return False
         return True
 
+    def _compute_qr_covariance(self, J: torch.Tensor) -> bool:
+        if J.shape[0] < J.shape[1]:
+            if self.options.null_space_rank != 0:
+                return self._compute_svd_covariance(J)
+            return False
+        _, R = torch.linalg.qr(J, mode="reduced")
+        diag = torch.abs(torch.diagonal(R))
+        if diag.numel() == 0:
+            return False
+        threshold = self._qr_threshold(diag, J.shape)
+        rank = int(torch.sum(diag > threshold).detach().cpu())
+        if rank < J.shape[1]:
+            if self.options.null_space_rank != 0:
+                return self._compute_svd_covariance(J)
+            return False
+        if torch.any((diag / diag.max()) < self.options.min_reciprocal_condition_number) and self.options.null_space_rank == 0:
+            return False
+        eye = torch.eye(R.shape[1], dtype=R.dtype, device=R.device)
+        R_inv = torch.linalg.solve_triangular(R, eye, upper=True)
+        self._tangent_covariance = R_inv @ R_inv.T
+        return True
+
     def get_covariance_block(self, a: ParameterBlock | torch.Tensor, b: ParameterBlock | torch.Tensor) -> torch.Tensor:
         block = self._get_tangent_block(a, b)
         assert self._problem is not None
-        pa = self._problem._coerce_parameter_block(a)
-        pb = self._problem._coerce_parameter_block(b)
-        Ja = pa.manifold.plus_jacobian(pa.tensor.detach().reshape(-1)).to(dtype=block.dtype, device=block.device)
-        Jb = pb.manifold.plus_jacobian(pb.tensor.detach().reshape(-1)).to(dtype=block.dtype, device=block.device)
+        pa = self._problem._require_parameter_block(a)
+        pb = self._problem._require_parameter_block(b)
+        Ja = self._ambient_to_tangent_basis(pa, dtype=block.dtype, device=block.device)
+        Jb = self._ambient_to_tangent_basis(pb, dtype=block.dtype, device=block.device)
         return Ja @ block @ Jb.T
 
     def get_covariance_block_in_tangent_space(
@@ -96,15 +126,31 @@ class Covariance:
     def _get_tangent_block(self, a: ParameterBlock | torch.Tensor, b: ParameterBlock | torch.Tensor) -> torch.Tensor:
         if self._problem is None or self._tangent_covariance is None:
             raise RuntimeError("Covariance.compute must be called first")
-        pa = self._problem._coerce_parameter_block(a)
-        pb = self._problem._coerce_parameter_block(b)
+        pa = self._problem._require_parameter_block(a)
+        pb = self._problem._require_parameter_block(b)
         if (pa, pb) not in self._blocks:
             raise KeyError("Requested covariance block was not computed")
         sa = self._slices.get(pa, slice(0, 0))
         sb = self._slices.get(pb, slice(0, 0))
         return self._tangent_covariance[sa, sb]
 
+    def _ambient_to_tangent_basis(
+        self,
+        block: ParameterBlock,
+        *,
+        dtype: torch.dtype,
+        device: torch.device,
+    ) -> torch.Tensor:
+        if block.tangent_size == 0:
+            return torch.zeros((block.size, 0), dtype=dtype, device=device)
+        return block.manifold.plus_jacobian(block.tensor.detach().reshape(-1)).to(dtype=dtype, device=device)
+
     def _svd_threshold(self, singular_values: torch.Tensor, shape: tuple[int, int]) -> torch.Tensor:
         if self.options.column_pivot_threshold >= 0:
             return singular_values.new_tensor(self.options.column_pivot_threshold)
         return 20.0 * (shape[0] + shape[1]) * torch.finfo(singular_values.dtype).eps * singular_values.max()
+
+    def _qr_threshold(self, diagonal: torch.Tensor, shape: tuple[int, int]) -> torch.Tensor:
+        if self.options.column_pivot_threshold >= 0:
+            return diagonal.new_tensor(self.options.column_pivot_threshold)
+        return 20.0 * (shape[0] + shape[1]) * torch.finfo(diagonal.dtype).eps * diagonal.max()
