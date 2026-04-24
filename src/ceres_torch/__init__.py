@@ -37,6 +37,10 @@ from .interpolation import (
     CubicInterpolator,
     Grid1D,
     Grid2D,
+    CubicHermiteSpline,
+    CubicHermiteSplineDerivative,
+    catmull_rom_spline,
+    catmull_rom_spline_derivative,
     cubic_hermite_spline,
     cubic_hermite_spline_derivative,
 )

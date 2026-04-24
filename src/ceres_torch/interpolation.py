@@ -5,6 +5,33 @@ from dataclasses import dataclass
 import torch
 
 
+def catmull_rom_spline(
+    p0: torch.Tensor,
+    p1: torch.Tensor,
+    p2: torch.Tensor,
+    p3: torch.Tensor,
+    x: torch.Tensor,
+) -> torch.Tensor:
+    a = 0.5 * (-p0 + 3.0 * p1 - 3.0 * p2 + p3)
+    b = 0.5 * (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3)
+    c = 0.5 * (-p0 + p2)
+    d = p1
+    return d + x * (c + x * (b + x * a))
+
+
+def catmull_rom_spline_derivative(
+    p0: torch.Tensor,
+    p1: torch.Tensor,
+    p2: torch.Tensor,
+    p3: torch.Tensor,
+    x: torch.Tensor,
+) -> torch.Tensor:
+    a = 0.5 * (-p0 + 3.0 * p1 - 3.0 * p2 + p3)
+    b = 0.5 * (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3)
+    c = 0.5 * (-p0 + p2)
+    return c + x * (2.0 * b + 3.0 * a * x)
+
+
 def cubic_hermite_spline(p0: torch.Tensor, p1: torch.Tensor, m0: torch.Tensor, m1: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
     x2 = x * x
     x3 = x2 * x
@@ -40,6 +67,10 @@ class Grid1D:
         idx = max(0, min(idx, self.data.shape[0] - 1))
         return self.data[idx]
 
+    @property
+    def data_dimension(self) -> int:
+        return 1 if self.data.ndim == 1 else int(torch.tensor(self.data.shape[1:]).prod().item())
+
 
 class CubicInterpolator:
     def __init__(self, grid: Grid1D) -> None:
@@ -55,16 +86,18 @@ class CubicInterpolator:
         value, unit_derivative = self._evaluate_unit_interval(x_t)
         return value, unit_derivative / self.grid.spacing
 
+    Evaluate = evaluate_with_derivative
+
     def _evaluate_unit_interval(self, x_t: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         u = (x_t - self.grid.x0) / self.grid.spacing
         i = torch.floor(u).to(torch.long)
         t = u - i
         i0 = int(i.detach().cpu())
-        p0 = self.grid.get(i0)
-        p1 = self.grid.get(i0 + 1)
-        m0 = 0.5 * (self.grid.get(i0 + 1) - self.grid.get(i0 - 1))
-        m1 = 0.5 * (self.grid.get(i0 + 2) - self.grid.get(i0))
-        return cubic_hermite_spline(p0, p1, m0, m1, t), cubic_hermite_spline_derivative(p0, p1, m0, m1, t)
+        p0 = self.grid.get(i0 - 1)
+        p1 = self.grid.get(i0)
+        p2 = self.grid.get(i0 + 1)
+        p3 = self.grid.get(i0 + 2)
+        return catmull_rom_spline(p0, p1, p2, p3, t), catmull_rom_spline_derivative(p0, p1, p2, p3, t)
 
 
 @dataclass
@@ -79,6 +112,10 @@ class Grid2D:
         row = max(0, min(row, self.data.shape[0] - 1))
         col = max(0, min(col, self.data.shape[1] - 1))
         return self.data[row, col]
+
+    @property
+    def data_dimension(self) -> int:
+        return 1 if self.data.ndim == 2 else int(torch.tensor(self.data.shape[2:]).prod().item())
 
 
 class BiCubicInterpolator:
@@ -113,3 +150,9 @@ class BiCubicInterpolator:
         value, drow_unit = row_interp.evaluate_with_derivative(1.0 + tu)
         dcol_unit = CubicInterpolator(Grid1D(torch.stack(col_derivatives))).evaluate(1.0 + tu)
         return value, drow_unit / self.grid.row_spacing, dcol_unit / self.grid.col_spacing
+
+    Evaluate = evaluate_with_derivatives
+
+
+CubicHermiteSpline = catmull_rom_spline
+CubicHermiteSplineDerivative = catmull_rom_spline_derivative

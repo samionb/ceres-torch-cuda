@@ -94,6 +94,25 @@ def test_cubic_interpolator_derivative_for_linear_data() -> None:
     torch.testing.assert_close(derivative, torch.tensor(2.0, dtype=torch.float64))
 
 
+def test_catmull_rom_kernel_and_vector_valued_grid1d() -> None:
+    p0 = torch.tensor([0.0, 1.0], dtype=torch.float64)
+    p1 = torch.tensor([1.0, 3.0], dtype=torch.float64)
+    p2 = torch.tensor([2.0, 5.0], dtype=torch.float64)
+    p3 = torch.tensor([3.0, 7.0], dtype=torch.float64)
+    x = torch.tensor(0.25, dtype=torch.float64)
+
+    torch.testing.assert_close(tc.CubicHermiteSpline(p0, p1, p2, p3, x), torch.tensor([1.25, 3.5], dtype=torch.float64))
+    torch.testing.assert_close(tc.CubicHermiteSplineDerivative(p0, p1, p2, p3, x), torch.tensor([1.0, 2.0], dtype=torch.float64))
+
+    samples = torch.stack([torch.tensor([float(i), 2.0 * i + 1.0], dtype=torch.float64) for i in range(6)])
+    interpolator = tc.CubicInterpolator(tc.Grid1D(samples))
+    value, derivative = interpolator.Evaluate(torch.tensor(2.25, dtype=torch.float64))
+
+    assert interpolator.grid.data_dimension == 2
+    torch.testing.assert_close(value, torch.tensor([2.25, 5.5], dtype=torch.float64))
+    torch.testing.assert_close(derivative, torch.tensor([1.0, 2.0], dtype=torch.float64))
+
+
 def test_bicubic_interpolator_derivatives_for_planar_data() -> None:
     rows = torch.arange(5, dtype=torch.float64).reshape(-1, 1)
     cols = torch.arange(6, dtype=torch.float64).reshape(1, -1)
@@ -109,3 +128,19 @@ def test_bicubic_interpolator_derivatives_for_planar_data() -> None:
     torch.testing.assert_close(value, torch.tensor(12.5, dtype=torch.float64))
     torch.testing.assert_close(drow, torch.tensor(4.0, dtype=torch.float64))
     torch.testing.assert_close(dcol, torch.tensor(1.5, dtype=torch.float64))
+
+
+def test_bicubic_interpolator_vector_valued_samples() -> None:
+    rows = torch.arange(5, dtype=torch.float64).reshape(-1, 1)
+    cols = torch.arange(6, dtype=torch.float64).reshape(1, -1)
+    first = 2.0 * rows + 3.0 * cols
+    second = rows - 4.0 * cols
+    data = torch.stack([first, second], dim=-1)
+    interpolator = tc.BiCubicInterpolator(tc.Grid2D(data, row_spacing=0.5, col_spacing=2.0))
+
+    value, drow, dcol = interpolator.Evaluate(torch.tensor(1.25, dtype=torch.float64), torch.tensor(3.0, dtype=torch.float64))
+
+    assert interpolator.grid.data_dimension == 2
+    torch.testing.assert_close(value, torch.tensor([9.5, -3.5], dtype=torch.float64))
+    torch.testing.assert_close(drow, torch.tensor([4.0, 2.0], dtype=torch.float64))
+    torch.testing.assert_close(dcol, torch.tensor([1.5, -2.0], dtype=torch.float64))
