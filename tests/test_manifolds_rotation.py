@@ -1,6 +1,6 @@
 import torch
 
-import torch_ceres as tc
+import ceres_torch as tc
 
 
 def test_quaternion_plus_minus_roundtrip() -> None:

@@ -1,6 +1,6 @@
-# torch-ceres
+# ceres-torch
 
-`torch-ceres` is a pure Python/PyTorch implementation of the public modeling and
+`ceres-torch` is a pure Python/PyTorch implementation of the public modeling and
 solver concepts exposed by Ceres Solver. The project targets Ceres 2.3.0 behavior
 as the compatibility reference while using idiomatic Python objects, dataclasses,
 and PyTorch tensors.
@@ -26,7 +26,7 @@ Full Ceres parity is intentionally tracked as a staged engineering effort in
 
 ```python
 import torch
-import torch_ceres as tc
+import ceres_torch as tc
 
 x = torch.tensor([0.5], dtype=torch.float64)
 

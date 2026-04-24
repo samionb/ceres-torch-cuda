@@ -1,6 +1,6 @@
 # Ceres 2.3.0 Traceability Matrix
 
-This matrix maps the local Ceres checkout to `torch-ceres` implementation
+This matrix maps the local Ceres checkout to `ceres-torch` implementation
 areas. Status values:
 
 - `implemented`: present in the current Python package.
@@ -8,24 +8,24 @@ areas. Status values:
   complete.
 - `planned`: explicit full-parity work remains.
 
-| Ceres area | Reference | torch-ceres area | Status | Acceptance target |
+| Ceres area | Reference | ceres-torch area | Status | Acceptance target |
 | --- | --- | --- | --- | --- |
-| `Problem`, residual/parameter blocks | `include/ceres/problem.h` | `torch_ceres.problem` | implemented | Add/remove/evaluate residuals, bounds, constants, manifolds |
-| `Solver::Options`, enums, summaries | `include/ceres/solver.h`, `types.h` | `torch_ceres.types`, `solver` | partial | Option validation and reports match Ceres semantics |
-| Cost functions | `cost_function.h`, autodiff/numeric headers | `torch_ceres.costs` | implemented | Analytic/autograd/numeric Jacobians agree on test functions |
-| Robust losses | `loss_function.h`, `corrector.cc` | `torch_ceres.losses` | implemented | Values/derivatives match formulas and solver uses Ceres robust correction |
-| Manifolds | `manifold.h`, sphere/line/product/autodiff | `torch_ceres.manifolds` | partial | Identity/Jacobian properties and quaternion layout parity |
-| Rotation helpers | `rotation.h` | `torch_ceres.rotation` | partial | Angle-axis, quaternion, matrix conversions and point rotation |
-| Interpolation | `cubic_interpolation.h` | `torch_ceres.interpolation` | partial | Cubic/bicubic sample values and derivatives |
-| Trust region minimizer | `trust_region_minimizer.cc` | `torch_ceres.solver` | partial | LM and dogleg convergence on Ceres examples |
-| Line search minimizer | `line_search_minimizer.cc` | `torch_ceres.gradient_solver`, `solver` | partial | Armijo/Wolfe, steepest, NCG, BFGS/LBFGS parity |
-| Dense linear solvers | dense QR/Cholesky files | `torch_ceres.linear` | partial | QR/Cholesky residual norms match Ceres tolerances |
-| Sparse/Schur solvers | Schur, CGNR, sparse Cholesky files | `torch_ceres.linear`, `schur` | partial | Pure PyTorch iterative paths; direct sparse via optional backends |
-| Preconditioners | Jacobi, Schur, cluster, subset files | `torch_ceres.linear` | partial | Identity/Jacobi implemented; Schur/cluster/subset parity planned |
-| Covariance | `covariance.h`, `covariance_impl.cc` | `torch_ceres.covariance` | partial | Dense SVD covariance blocks and rank policy; sparse QR backend planned |
-| GradientProblemSolver | `gradient_problem_solver.h` | `torch_ceres.gradient_solver` | partial | General unconstrained minimization with line search |
-| Callbacks/logging | `iteration_callback.h`, callbacks files | `torch_ceres.callbacks` | implemented | Callback termination and summary visibility |
-| Tiny solver | `tiny_solver.h` | `torch_ceres.tiny_solver` | partial | Small fixed-size LM parity |
+| `Problem`, residual/parameter blocks | `include/ceres/problem.h` | `ceres_torch.problem` | implemented | Add/remove/evaluate residuals, bounds, constants, manifolds |
+| `Solver::Options`, enums, summaries | `include/ceres/solver.h`, `types.h` | `ceres_torch.types`, `solver` | partial | Option validation and reports match Ceres semantics |
+| Cost functions | `cost_function.h`, autodiff/numeric headers | `ceres_torch.costs` | implemented | Analytic/autograd/numeric Jacobians agree on test functions |
+| Robust losses | `loss_function.h`, `corrector.cc` | `ceres_torch.losses` | implemented | Values/derivatives match formulas and solver uses Ceres robust correction |
+| Manifolds | `manifold.h`, sphere/line/product/autodiff | `ceres_torch.manifolds` | partial | Identity/Jacobian properties and quaternion layout parity |
+| Rotation helpers | `rotation.h` | `ceres_torch.rotation` | partial | Angle-axis, quaternion, matrix conversions and point rotation |
+| Interpolation | `cubic_interpolation.h` | `ceres_torch.interpolation` | partial | Cubic/bicubic sample values and derivatives |
+| Trust region minimizer | `trust_region_minimizer.cc` | `ceres_torch.solver` | partial | LM and dogleg convergence on Ceres examples |
+| Line search minimizer | `line_search_minimizer.cc` | `ceres_torch.gradient_solver`, `solver` | partial | Armijo/Wolfe, steepest, NCG, BFGS/LBFGS parity |
+| Dense linear solvers | dense QR/Cholesky files | `ceres_torch.linear` | partial | QR/Cholesky residual norms match Ceres tolerances |
+| Sparse/Schur solvers | Schur, CGNR, sparse Cholesky files | `ceres_torch.linear`, `schur` | partial | Pure PyTorch iterative paths; direct sparse via optional backends |
+| Preconditioners | Jacobi, Schur, cluster, subset files | `ceres_torch.linear` | partial | Identity/Jacobi implemented; Schur/cluster/subset parity planned |
+| Covariance | `covariance.h`, `covariance_impl.cc` | `ceres_torch.covariance` | partial | Dense SVD covariance blocks and rank policy; sparse QR backend planned |
+| GradientProblemSolver | `gradient_problem_solver.h` | `ceres_torch.gradient_solver` | partial | General unconstrained minimization with line search |
+| Callbacks/logging | `iteration_callback.h`, callbacks files | `ceres_torch.callbacks` | implemented | Callback termination and summary visibility |
+| Tiny solver | `tiny_solver.h` | `ceres_torch.tiny_solver` | partial | Small fixed-size LM parity |
 | C API | `c_api.h` | Not cloned | planned exception | Python callable/module support replaces C ABI |
 | Examples/data | `examples`, `data` | `examples`, tests | partial | Port all tutorial examples and BAL/NIST/SLAM validations |
 | CUDA | CUDA internal files | PyTorch device + optional backends | partial | CUDA tensors work; extension backends needed for Ceres-scale sparse |

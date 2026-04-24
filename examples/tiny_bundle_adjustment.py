@@ -1,6 +1,6 @@
 import torch
 
-import torch_ceres as tc
+import ceres_torch as tc
 
 
 def project(camera: torch.Tensor, point: torch.Tensor) -> torch.Tensor:
