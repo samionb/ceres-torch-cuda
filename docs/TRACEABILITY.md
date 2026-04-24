@@ -17,7 +17,7 @@ areas. Status values:
 | Manifolds | `manifold.h`, sphere/line/product/autodiff | `ceres_torch.manifolds` | partial | Identity/Jacobian properties and quaternion layout parity |
 | Rotation helpers | `rotation.h` | `ceres_torch.rotation` | partial | Angle-axis, quaternion, matrix conversions and point rotation |
 | Interpolation | `cubic_interpolation.h` | `ceres_torch.interpolation` | partial | Cubic/bicubic sample values and derivatives |
-| Trust region minimizer | `trust_region_minimizer.cc` | `ceres_torch.solver` | partial | LM and dogleg convergence on Ceres examples |
+| Trust region minimizer | `trust_region_minimizer.cc` | `ceres_torch.solver` | partial | LM/dogleg convergence, radius updates, nonmonotonic windows, progress counters |
 | Line search minimizer | `line_search_minimizer.cc` | `ceres_torch.gradient_solver`, `solver` | partial | Armijo/Wolfe, steepest, NCG, BFGS/LBFGS coverage in first/least-squares solvers |
 | Dense linear solvers | dense QR/Cholesky files | `ceres_torch.linear` | partial | QR/Cholesky residual norms match Ceres tolerances |
 | Sparse/Schur solvers | Schur, CGNR, sparse Cholesky files | `ceres_torch.linear`, `schur` | partial | Dense Schur with ordering, pure PyTorch iterative paths; direct sparse via optional backends |

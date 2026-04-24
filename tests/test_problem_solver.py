@@ -140,6 +140,46 @@ def test_dense_schur_respects_parameter_ordering_groups() -> None:
     torch.testing.assert_close(camera, torch.tensor([2.0], dtype=torch.float64), atol=1e-6, rtol=1e-6)
 
 
+def test_trust_region_radius_expands_after_high_quality_steps() -> None:
+    x = torch.tensor([0.5], dtype=torch.float64)
+    problem = tc.Problem()
+    problem.AddResidualBlock(tc.AutoDiffCostFunction(lambda x: 10.0 - x, [1]), None, [x])
+
+    summary = tc.solve(
+        tc.SolverOptions(
+            max_num_iterations=3,
+            initial_trust_region_radius=1.0,
+            gradient_tolerance=0.0,
+            function_tolerance=0.0,
+            parameter_tolerance=0.0,
+        ),
+        problem,
+    )
+
+    assert len(summary.iterations) >= 3
+    assert summary.iterations[2].trust_region_radius > summary.iterations[1].trust_region_radius
+    assert summary.iterations[1].step_solver_time_in_seconds >= 0.0
+
+
+def test_minimizer_progress_to_stdout_logs_iteration(capsys: pytest.CaptureFixture[str]) -> None:
+    x = torch.tensor([0.5], dtype=torch.float64)
+    problem = tc.Problem()
+    problem.AddResidualBlock(tc.AutoDiffCostFunction(lambda x: 10.0 - x, [1]), None, [x])
+
+    tc.solve(
+        tc.SolverOptions(
+            max_num_iterations=0,
+            minimizer_progress_to_stdout=True,
+            logging_type=tc.LoggingType.PER_MINIMIZER_ITERATION,
+        ),
+        problem,
+    )
+
+    output = capsys.readouterr().out
+    assert "0:" in output
+    assert "f:" in output
+
+
 def test_powell_function_converges() -> None:
     x1 = torch.tensor([3.0], dtype=torch.float64)
     x2 = torch.tensor([-1.0], dtype=torch.float64)

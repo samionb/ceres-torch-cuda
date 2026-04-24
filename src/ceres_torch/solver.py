@@ -18,6 +18,7 @@ from .types import (
     SolverSummary,
     TerminationType,
     TrustRegionStrategyType,
+    LoggingType,
 )
 
 
@@ -36,10 +37,12 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
     radius = options.initial_trust_region_radius
     consecutive_invalid = 0
     previous_cost: float | None = None
+    cost_window: list[float] = []
 
     initial = problem.evaluate(EvaluateOptions(parameter_blocks=active_blocks), compute_jacobian=True)
     summary.initial_cost = float(initial.cost.detach().cpu())
     summary.final_cost = summary.initial_cost
+    cost_window.append(summary.initial_cost)
     if initial.gradient is None:
         summary.termination_type = TerminationType.CONVERGENCE
         summary.message = "No active parameters."
@@ -70,6 +73,7 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
 
         if iteration == 0:
             summary.iterations.append(iter_summary)
+            _maybe_log_progress(options, iter_summary)
             if _gradient_converged(grad_max, options):
                 summary.termination_type = TerminationType.CONVERGENCE
                 summary.message = "Gradient tolerance reached."
@@ -89,8 +93,10 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
             break
 
         if options.trust_region_strategy_type is TrustRegionStrategyType.DOGLEG:
+            linear_start = time.perf_counter()
             step = dogleg_step(J, r, radius)
             linear_iterations = 1
+            linear_time = time.perf_counter() - linear_start
         else:
             damping = jacobi_damping_from_jacobian(
                 J,
@@ -99,6 +105,7 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
                 radius=radius,
                 jacobi_scaling=options.jacobi_scaling,
             )
+            linear_start = time.perf_counter()
             linear_result = solve_linear_system(
                 J,
                 -r,
@@ -109,6 +116,7 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
                 tolerance=options.eta,
                 preconditioner_type=options.preconditioner_type,
             )
+            linear_time = time.perf_counter() - linear_start
             step = linear_result.x
             linear_iterations = linear_result.summary.num_iterations
             summary.num_linear_solves += 1
@@ -124,6 +132,7 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
                 summary.message = "Too many invalid trust-region steps."
                 break
             summary.iterations.append(iter_summary)
+            _maybe_log_progress(options, iter_summary)
             continue
 
         snapshot = problem.snapshot()
@@ -131,15 +140,17 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
         candidate = problem.evaluate(compute_jacobian=False)
         summary.num_residual_evaluations += 1
         candidate_cost = float(candidate.cost.detach().cpu())
-        actual_decrease = cost - candidate_cost
+        reference_cost = max(cost_window) if options.use_nonmonotonic_steps else cost
+        actual_decrease = reference_cost - candidate_cost
         model_decrease = _model_decrease(J, r, step)
         rho = actual_decrease / max(model_decrease, torch.finfo(J.dtype).eps)
         accepted = actual_decrease > 0 and rho >= options.min_relative_decrease
 
         iter_summary.step_norm = float(torch.linalg.norm(step).detach().cpu())
-        iter_summary.cost_change = actual_decrease
+        iter_summary.cost_change = cost - candidate_cost
         iter_summary.relative_decrease = float(rho)
         iter_summary.linear_solver_iterations = linear_iterations
+        iter_summary.step_solver_time_in_seconds = linear_time
         iter_summary.iteration_time_in_seconds = time.perf_counter() - iter_start
         iter_summary.cumulative_time_in_seconds = time.perf_counter() - start
 
@@ -147,8 +158,18 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
             consecutive_invalid = 0
             summary.num_successful_steps += 1
             summary.final_cost = candidate_cost
-            radius = min(options.max_trust_region_radius, radius * max(1.5, 1.0 + 2.0 * max(rho, 0.0)))
+            iter_summary.step_is_nonmonotonic = candidate_cost > cost
+            radius = _updated_trust_region_radius(
+                radius,
+                rho,
+                iter_summary.step_norm,
+                options.max_trust_region_radius,
+            )
             iter_summary.step_is_successful = True
+            cost_window.append(candidate_cost)
+            max_window = max(1, options.max_consecutive_nonmonotonic_steps + 1)
+            if len(cost_window) > max_window:
+                cost_window.pop(0)
             if options.update_state_every_iteration:
                 pass
         else:
@@ -158,6 +179,7 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
             iter_summary.step_is_successful = False
 
         summary.iterations.append(iter_summary)
+        _maybe_log_progress(options, iter_summary)
         for callback in options.callbacks:
             result = callback(iter_summary)
             if result is CallbackReturnType.SOLVER_ABORT:
@@ -238,6 +260,7 @@ def _line_search_solve(options: SolverOptions, problem: Problem) -> SolverSummar
             gradient_max_norm=float(grad_max.detach().cpu()),
         )
         summary.iterations.append(iter_summary)
+        _maybe_log_progress(options, iter_summary)
         if _gradient_converged(grad_max, options):
             summary.termination_type = TerminationType.CONVERGENCE
             summary.message = "Gradient tolerance reached."
@@ -431,6 +454,33 @@ def _model_decrease(J: torch.Tensor, r: torch.Tensor, step: torch.Tensor) -> flo
     after_r = r + J @ step
     after = 0.5 * torch.dot(after_r, after_r)
     return float(torch.clamp(before - after, min=0.0).detach().cpu())
+
+
+def _updated_trust_region_radius(
+    radius: float,
+    rho: float,
+    step_norm: float,
+    max_radius: float,
+) -> float:
+    if rho > 0.75:
+        return min(max_radius, max(2.0 * radius, 3.0 * max(step_norm, torch.finfo(torch.float64).eps)))
+    if rho < 0.25:
+        return max(radius * 0.5, torch.finfo(torch.float64).tiny)
+    return radius
+
+
+def _maybe_log_progress(options: SolverOptions, iteration: IterationSummary) -> None:
+    if not options.minimizer_progress_to_stdout or options.logging_type is LoggingType.SILENT:
+        return
+    print(
+        f"{iteration.iteration:4d}: "
+        f"f:{iteration.cost: .6e} "
+        f"d:{iteration.cost_change: .3e} "
+        f"g:{iteration.gradient_max_norm: .3e} "
+        f"h:{iteration.step_norm: .3e} "
+        f"rho:{iteration.relative_decrease: .3e} "
+        f"mu:{iteration.trust_region_radius: .3e}"
+    )
 
 
 def _line_search_direction(
