@@ -22,6 +22,34 @@ def test_subset_manifold_jacobian() -> None:
     assert manifold.plus_jacobian(x).shape == (4, 2)
 
 
+def test_manifold_ceres_style_aliases_and_right_multiply() -> None:
+    manifold = tc.SubsetManifold(4, [1, 3])
+    x = torch.arange(4, dtype=torch.float64)
+    delta = torch.tensor([0.25, -0.5], dtype=torch.float64)
+    ambient_matrix = torch.arange(12, dtype=torch.float64).reshape(3, 4)
+
+    torch.testing.assert_close(manifold.Plus(x, delta), manifold.plus(x, delta))
+    torch.testing.assert_close(manifold.Minus(manifold.Plus(x, delta), x), delta)
+    torch.testing.assert_close(manifold.PlusJacobian(x), manifold.plus_jacobian(x))
+    torch.testing.assert_close(manifold.MinusJacobian(x), manifold.minus_jacobian(x))
+    torch.testing.assert_close(
+        manifold.RightMultiplyByPlusJacobian(x, ambient_matrix),
+        ambient_matrix @ manifold.plus_jacobian(x),
+    )
+
+
+def test_product_and_sphere_manifold_identities() -> None:
+    product = tc.ProductManifold(tc.EuclideanManifold(2), tc.SphereManifold(3))
+    x = torch.tensor([1.0, -2.0, 0.0, 0.0, 2.0], dtype=torch.float64)
+    delta = torch.tensor([0.5, -0.25, 0.1, -0.2], dtype=torch.float64)
+
+    y = product.plus(x, delta)
+    recovered = product.minus(y, x)
+
+    torch.testing.assert_close(recovered, delta, atol=1e-8, rtol=1e-8)
+    torch.testing.assert_close(torch.linalg.norm(y[2:]), torch.linalg.norm(x[2:]), atol=1e-10, rtol=1e-10)
+
+
 def test_angle_axis_rotates_point() -> None:
     aa = torch.tensor([0.0, 0.0, torch.pi / 2], dtype=torch.float64)
     point = torch.tensor([1.0, 0.0, 0.0], dtype=torch.float64)

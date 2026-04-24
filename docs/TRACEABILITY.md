@@ -14,7 +14,7 @@ areas. Status values:
 | `Solver::Options`, enums, summaries | `include/ceres/solver.h`, `types.h` | `ceres_torch.types`, `solver` | partial | Option validation and reports match Ceres semantics |
 | Cost functions | `cost_function.h`, autodiff/numeric headers | `ceres_torch.costs` | implemented | Analytic/autograd/numeric Jacobians agree on test functions |
 | Robust losses | `loss_function.h`, `corrector.cc` | `ceres_torch.losses` | implemented | Values/derivatives match formulas and solver uses Ceres robust correction |
-| Manifolds | `manifold.h`, sphere/line/product/autodiff | `ceres_torch.manifolds` | partial | Identity/Jacobian properties and quaternion layout parity |
+| Manifolds | `manifold.h`, sphere/line/product/autodiff | `ceres_torch.manifolds` | partial | Identity/Jacobian properties, Ceres-style aliases, right-multiply helper, quaternion layout parity |
 | Rotation helpers | `rotation.h` | `ceres_torch.rotation` | partial | Angle-axis, quaternion, matrix conversions, cross products, and point rotation |
 | Interpolation | `cubic_interpolation.h` | `ceres_torch.interpolation` | partial | Cubic/bicubic sample values and derivatives |
 | Trust region minimizer | `trust_region_minimizer.cc` | `ceres_torch.solver` | partial | LM/dogleg convergence, radius updates, nonmonotonic windows, progress counters |

@@ -21,8 +21,14 @@ class Manifold:
     def plus(self, x: torch.Tensor, delta: torch.Tensor) -> torch.Tensor:
         raise NotImplementedError
 
+    def Plus(self, x: torch.Tensor, delta: torch.Tensor) -> torch.Tensor:
+        return self.plus(x, delta)
+
     def minus(self, y: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
         raise NotImplementedError
+
+    def Minus(self, y: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+        return self.minus(y, x)
 
     def plus_jacobian(self, x: torch.Tensor) -> torch.Tensor:
         delta = torch.zeros(self.tangent_size, dtype=x.dtype, device=x.device, requires_grad=True)
@@ -32,6 +38,9 @@ class Manifold:
 
         return torch.autograd.functional.jacobian(wrapped, delta).reshape(self.ambient_size, self.tangent_size).detach()
 
+    def PlusJacobian(self, x: torch.Tensor) -> torch.Tensor:
+        return self.plus_jacobian(x)
+
     def minus_jacobian(self, x: torch.Tensor) -> torch.Tensor:
         y = x.detach().clone().requires_grad_(True)
 
@@ -39,6 +48,16 @@ class Manifold:
             return self.minus(z, x)
 
         return torch.autograd.functional.jacobian(wrapped, y).reshape(self.tangent_size, self.ambient_size).detach()
+
+    def MinusJacobian(self, x: torch.Tensor) -> torch.Tensor:
+        return self.minus_jacobian(x)
+
+    def right_multiply_by_plus_jacobian(self, x: torch.Tensor, ambient_matrix: torch.Tensor) -> torch.Tensor:
+        plus_jacobian = self.plus_jacobian(x).to(dtype=ambient_matrix.dtype, device=ambient_matrix.device)
+        return ambient_matrix @ plus_jacobian
+
+    def RightMultiplyByPlusJacobian(self, x: torch.Tensor, ambient_matrix: torch.Tensor) -> torch.Tensor:
+        return self.right_multiply_by_plus_jacobian(x, ambient_matrix)
 
 
 @dataclass
@@ -294,4 +313,3 @@ class AutoDiffManifold(Manifold):
 
     def minus(self, y: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
         return self.minus_fun(y.reshape(-1), x.reshape(-1)).reshape(-1)
-
