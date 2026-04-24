@@ -105,6 +105,7 @@ def gradient_solve(
     previous_direction: Optional[torch.Tensor] = None
     s_history: list[torch.Tensor] = []
     y_history: list[torch.Tensor] = []
+    inverse_hessian: Optional[torch.Tensor] = None
 
     for iteration in range(options.max_num_iterations + 1):
         value, ambient_grad = problem.function.value_and_gradient(parameters.detach())
@@ -131,7 +132,17 @@ def gradient_solve(
             summary.message = "Maximum iterations reached."
             break
 
-        direction = _search_direction(options, tangent_grad, previous_grad, previous_direction, s_history, y_history)
+        if inverse_hessian is None or inverse_hessian.shape[0] != tangent_grad.numel():
+            inverse_hessian = torch.eye(tangent_grad.numel(), dtype=tangent_grad.dtype, device=tangent_grad.device)
+        direction = _search_direction(
+            options,
+            tangent_grad,
+            previous_grad,
+            previous_direction,
+            s_history,
+            y_history,
+            inverse_hessian,
+        )
         directional_derivative = torch.dot(tangent_grad, direction)
         if directional_derivative >= 0:
             direction = -tangent_grad
@@ -146,9 +157,20 @@ def gradient_solve(
             trial_derivative = torch.dot(tangent_grad, trial_direction)
             for ls_iter in range(options.max_num_line_search_step_size_iterations):
                 candidate = manifold.plus(snapshot.reshape(-1), step_size * trial_direction).reshape_as(parameters)
-                cand_value, _ = problem.function.value_and_gradient(candidate.detach())
-                summary.num_cost_evaluations += 1
-                if cand_value <= value + options.line_search_sufficient_function_decrease * step_size * trial_derivative:
+                cand_value, cand_ambient_grad = problem.function.value_and_gradient(candidate.detach())
+                summary.num_gradient_evaluations += 1
+                candidate_plus_jac = manifold.plus_jacobian(candidate.detach().reshape(-1)).to(
+                    dtype=parameters.dtype, device=parameters.device
+                )
+                cand_tangent_grad = candidate_plus_jac.T @ cand_ambient_grad.reshape(-1)
+                armijo_ok = cand_value <= value + options.line_search_sufficient_function_decrease * step_size * trial_derivative
+                if options.line_search_type is LineSearchType.WOLFE:
+                    curvature_ok = torch.abs(torch.dot(cand_tangent_grad, trial_direction)) <= (
+                        options.line_search_sufficient_curvature_decrease * torch.abs(trial_derivative)
+                    )
+                else:
+                    curvature_ok = True
+                if armijo_ok and curvature_ok:
                     with torch.no_grad():
                         parameters.reshape(-1).copy_(candidate.reshape(-1))
                     accepted = True
@@ -167,12 +189,17 @@ def gradient_solve(
             summary.message = "Line search failed."
             break
         new_value, new_ambient_grad = problem.function.value_and_gradient(parameters.detach())
-        new_tangent_grad = plus_jac.T @ new_ambient_grad.reshape(-1)
-        s_history.append(step_size * direction.detach())
-        y_history.append((new_tangent_grad - tangent_grad).detach())
+        new_plus_jac = manifold.plus_jacobian(parameters.detach().reshape(-1)).to(dtype=parameters.dtype, device=parameters.device)
+        new_tangent_grad = new_plus_jac.T @ new_ambient_grad.reshape(-1)
+        s = (iter_summary.step_size * direction).detach()
+        y = (new_tangent_grad - tangent_grad).detach()
+        s_history.append(s)
+        y_history.append(y)
         if len(s_history) > options.max_lbfgs_rank:
             s_history.pop(0)
             y_history.pop(0)
+        if options.line_search_direction_type is LineSearchDirectionType.BFGS:
+            inverse_hessian = _bfgs_update(inverse_hessian, s, y)
         previous_grad = tangent_grad.detach()
         previous_direction = direction.detach()
         new_grad_max = torch.max(torch.abs(new_tangent_grad)) if new_tangent_grad.numel() else new_tangent_grad.new_tensor(0.0)
@@ -207,6 +234,7 @@ def _search_direction(
     previous_direction: Optional[torch.Tensor],
     s_history: list[torch.Tensor],
     y_history: list[torch.Tensor],
+    inverse_hessian: Optional[torch.Tensor],
 ) -> torch.Tensor:
     if options.line_search_direction_type is LineSearchDirectionType.STEEPEST_DESCENT:
         return -grad
@@ -221,6 +249,8 @@ def _search_direction(
         return -grad + torch.clamp(beta, min=0.0) * previous_direction
     if options.line_search_direction_type is LineSearchDirectionType.LBFGS and s_history:
         return _lbfgs_two_loop(grad, s_history, y_history)
+    if options.line_search_direction_type is LineSearchDirectionType.BFGS and inverse_hessian is not None:
+        return -(inverse_hessian @ grad)
     return -grad
 
 
@@ -244,3 +274,14 @@ def _lbfgs_two_loop(grad: torch.Tensor, s_history: list[torch.Tensor], y_history
         beta = rho * torch.dot(y, r)
         r = r + s * (alpha - beta)
     return -r
+
+
+def _bfgs_update(inverse_hessian: torch.Tensor, s: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    ys = torch.dot(y, s)
+    if bool((ys <= 10.0 * torch.finfo(s.dtype).eps).detach().cpu()):
+        return torch.eye(inverse_hessian.shape[0], dtype=inverse_hessian.dtype, device=inverse_hessian.device)
+    rho = 1.0 / ys
+    eye = torch.eye(inverse_hessian.shape[0], dtype=inverse_hessian.dtype, device=inverse_hessian.device)
+    sy = torch.outer(s, y)
+    ys_outer = torch.outer(y, s)
+    return (eye - rho * sy) @ inverse_hessian @ (eye - rho * ys_outer) + rho * torch.outer(s, s)

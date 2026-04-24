@@ -13,7 +13,7 @@ areas. Status values:
 | `Problem`, residual/parameter blocks | `include/ceres/problem.h` | `torch_ceres.problem` | implemented | Add/remove/evaluate residuals, bounds, constants, manifolds |
 | `Solver::Options`, enums, summaries | `include/ceres/solver.h`, `types.h` | `torch_ceres.types`, `solver` | partial | Option validation and reports match Ceres semantics |
 | Cost functions | `cost_function.h`, autodiff/numeric headers | `torch_ceres.costs` | implemented | Analytic/autograd/numeric Jacobians agree on test functions |
-| Robust losses | `loss_function.h` | `torch_ceres.losses` | implemented | Values/derivatives match formulas and solver uses row scaling |
+| Robust losses | `loss_function.h`, `corrector.cc` | `torch_ceres.losses` | implemented | Values/derivatives match formulas and solver uses Ceres robust correction |
 | Manifolds | `manifold.h`, sphere/line/product/autodiff | `torch_ceres.manifolds` | partial | Identity/Jacobian properties and quaternion layout parity |
 | Rotation helpers | `rotation.h` | `torch_ceres.rotation` | partial | Angle-axis, quaternion, matrix conversions and point rotation |
 | Interpolation | `cubic_interpolation.h` | `torch_ceres.interpolation` | partial | Cubic/bicubic sample values and derivatives |
@@ -22,10 +22,10 @@ areas. Status values:
 | Dense linear solvers | dense QR/Cholesky files | `torch_ceres.linear` | partial | QR/Cholesky residual norms match Ceres tolerances |
 | Sparse/Schur solvers | Schur, CGNR, sparse Cholesky files | `torch_ceres.linear`, `schur` | partial | Pure PyTorch iterative paths; direct sparse via optional backends |
 | Preconditioners | Jacobi, Schur, cluster, subset files | `torch_ceres.linear` | partial | Identity/Jacobi implemented; Schur/cluster/subset parity planned |
-| Covariance | `covariance.h`, `covariance_impl.cc` | `torch_ceres.covariance` | partial | Dense SVD covariance blocks; sparse QR backend planned |
+| Covariance | `covariance.h`, `covariance_impl.cc` | `torch_ceres.covariance` | partial | Dense SVD covariance blocks and rank policy; sparse QR backend planned |
 | GradientProblemSolver | `gradient_problem_solver.h` | `torch_ceres.gradient_solver` | partial | General unconstrained minimization with line search |
 | Callbacks/logging | `iteration_callback.h`, callbacks files | `torch_ceres.callbacks` | implemented | Callback termination and summary visibility |
-| Tiny solver | `tiny_solver.h` | `torch_ceres.tiny_solver` | planned | Small fixed-size LM parity |
+| Tiny solver | `tiny_solver.h` | `torch_ceres.tiny_solver` | partial | Small fixed-size LM parity |
 | C API | `c_api.h` | Not cloned | planned exception | Python callable/module support replaces C ABI |
 | Examples/data | `examples`, `data` | `examples`, tests | partial | Port all tutorial examples and BAL/NIST/SLAM validations |
 | CUDA | CUDA internal files | PyTorch device + optional backends | partial | CUDA tensors work; extension backends needed for Ceres-scale sparse |
@@ -44,3 +44,11 @@ areas. Status values:
 5. Port all examples under `C:\Git\ceres-solver\examples` and all public helper
    tests under `internal/ceres/*test.cc`.
 
+## Ported Examples
+
+- `hello_world.py`
+- `curve_fitting.py`
+- `robust_curve_fitting.py`
+- `powell.py`
+- `rosenbrock.py`
+- `tiny_bundle_adjustment.py`

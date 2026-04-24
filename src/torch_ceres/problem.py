@@ -6,7 +6,7 @@ from typing import Iterable, Optional, Sequence
 import torch
 
 from .costs import CallableCostFunction, CostFunction
-from .losses import LossFunction, robust_weight
+from .losses import LossFunction, robustify_residual_and_jacobian
 from .manifolds import EuclideanManifold, Manifold
 
 
@@ -132,6 +132,8 @@ class Problem:
         self._tensor_to_block[key] = block
         return block
 
+    AddParameterBlock = add_parameter_block
+
     def add_residual_block(
         self,
         cost_function: CostFunction | callable,
@@ -152,8 +154,12 @@ class Problem:
         self.residual_blocks.append(residual)
         return residual
 
+    AddResidualBlock = add_residual_block
+
     def remove_residual_block(self, residual_block: ResidualBlock) -> None:
         self.residual_blocks.remove(residual_block)
+
+    RemoveResidualBlock = remove_residual_block
 
     def remove_parameter_block(self, parameter_block: ParameterBlock | torch.Tensor) -> None:
         block = self._coerce_parameter_block(parameter_block)
@@ -161,20 +167,30 @@ class Problem:
         self.parameter_blocks.remove(block)
         self._tensor_to_block.pop(id(block.tensor), None)
 
+    RemoveParameterBlock = remove_parameter_block
+
     def set_parameter_block_constant(self, parameter_block: ParameterBlock | torch.Tensor) -> None:
         self._coerce_parameter_block(parameter_block).constant = True
+
+    SetParameterBlockConstant = set_parameter_block_constant
 
     def set_parameter_block_variable(self, parameter_block: ParameterBlock | torch.Tensor) -> None:
         self._coerce_parameter_block(parameter_block).constant = False
 
+    SetParameterBlockVariable = set_parameter_block_variable
+
     def is_parameter_block_constant(self, parameter_block: ParameterBlock | torch.Tensor) -> bool:
         return self._coerce_parameter_block(parameter_block).constant
+
+    IsParameterBlockConstant = is_parameter_block_constant
 
     def set_manifold(self, parameter_block: ParameterBlock | torch.Tensor, manifold: Optional[Manifold]) -> None:
         block = self._coerce_parameter_block(parameter_block)
         block.manifold = manifold or EuclideanManifold(block.size)
         if block.manifold.ambient_size != block.size:
             raise ValueError("Manifold ambient size must equal parameter block size")
+
+    SetManifold = set_manifold
 
     def set_bounds(
         self,
@@ -188,6 +204,8 @@ class Problem:
         if upper is not None:
             block.upper_bound = torch.as_tensor(upper, dtype=block.dtype, device=block.device).broadcast_to(block.tensor.shape).clone()
 
+    SetBounds = set_bounds
+
     def set_parameter_lower_bound(self, parameter_block: ParameterBlock | torch.Tensor, index: int, lower: float) -> None:
         block = self._coerce_parameter_block(parameter_block)
         lb = (
@@ -197,6 +215,8 @@ class Problem:
         )
         lb.reshape(-1)[index] = lower
         block.lower_bound = lb.reshape_as(block.tensor)
+
+    SetParameterLowerBound = set_parameter_lower_bound
 
     def set_parameter_upper_bound(self, parameter_block: ParameterBlock | torch.Tensor, index: int, upper: float) -> None:
         block = self._coerce_parameter_block(parameter_block)
@@ -208,17 +228,27 @@ class Problem:
         ub.reshape(-1)[index] = upper
         block.upper_bound = ub.reshape_as(block.tensor)
 
+    SetParameterUpperBound = set_parameter_upper_bound
+
     def get_parameter_blocks(self) -> list[ParameterBlock]:
         return list(self.parameter_blocks)
+
+    GetParameterBlocks = get_parameter_blocks
 
     def get_residual_blocks(self) -> list[ResidualBlock]:
         return list(self.residual_blocks)
 
+    GetResidualBlocks = get_residual_blocks
+
     def num_parameter_blocks(self) -> int:
         return len(self.parameter_blocks)
 
+    NumParameterBlocks = num_parameter_blocks
+
     def num_parameters(self) -> int:
         return sum(b.size for b in self.parameter_blocks)
+
+    NumParameters = num_parameters
 
     def num_effective_parameters(self) -> int:
         return sum(b.tangent_size for b in self.parameter_blocks)
@@ -226,8 +256,12 @@ class Problem:
     def num_residual_blocks(self) -> int:
         return len(self.residual_blocks)
 
+    NumResidualBlocks = num_residual_blocks
+
     def num_residuals(self) -> int:
         return int(sum(self.evaluate_residual_block(rb, compute_jacobians=False).residuals.numel() for rb in self.residual_blocks))
+
+    NumResiduals = num_residuals
 
     def evaluate(self, options: Optional[EvaluateOptions] = None, *, compute_jacobian: bool = True) -> EvaluationResult:
         options = options or EvaluateOptions()
@@ -266,6 +300,8 @@ class Problem:
             crs_jacobian=CRSMatrix.from_dense(jacobian) if jacobian is not None else None,
         )
 
+    Evaluate = evaluate
+
     def evaluate_residual_block(
         self,
         residual_block: ResidualBlock,
@@ -281,6 +317,8 @@ class Problem:
             active_to_col=active_to_col,
             total_cols=total_cols,
         )
+
+    EvaluateResidualBlock = evaluate_residual_block
 
     def snapshot(self) -> list[torch.Tensor]:
         return [b.clone_value() for b in self.parameter_blocks]
@@ -331,13 +369,6 @@ class Problem:
             ambient_jacobians = None
 
         residual = residual.reshape(-1)
-        if apply_loss:
-            cost, weight = robust_weight(rb.loss_function, residual)
-        else:
-            cost = 0.5 * torch.sum(residual * residual)
-            weight = torch.ones((), dtype=residual.dtype, device=residual.device)
-        corrected_residual = weight * residual
-
         jacobian = None
         if compute_jacobians and ambient_jacobians is not None:
             jacobian = residual.new_zeros((residual.numel(), total_cols))
@@ -349,7 +380,12 @@ class Problem:
                 plus_jacobian = block.manifold.plus_jacobian(block.tensor.detach().reshape(-1)).to(
                     dtype=residual.dtype, device=residual.device
                 )
-                jacobian[:, col_slice] = weight * (J_ambient @ plus_jacobian)
+                jacobian[:, col_slice] = J_ambient @ plus_jacobian
+        if apply_loss:
+            cost, corrected_residual, jacobian = robustify_residual_and_jacobian(rb.loss_function, residual, jacobian)
+        else:
+            cost = 0.5 * torch.sum(residual * residual)
+            corrected_residual = residual
         return EvaluationResult(cost=cost, residuals=corrected_residual, jacobian=jacobian)
 
     def _active_column_map(self, blocks: Sequence[ParameterBlock]) -> tuple[dict[ParameterBlock, slice], int]:
@@ -384,4 +420,3 @@ class Problem:
 
 def add_residual_blocks(problem: Problem, blocks: Iterable[ResidualBlock]) -> None:
     problem.residual_blocks.extend(blocks)
-

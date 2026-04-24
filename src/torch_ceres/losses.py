@@ -154,3 +154,40 @@ def robust_weight(loss: Optional[LossFunction], residual: torch.Tensor) -> tuple
     weight = torch.sqrt(torch.clamp(rho1, min=0.0))
     return 0.5 * rho0, weight
 
+
+def robustify_residual_and_jacobian(
+    loss: Optional[LossFunction],
+    residual: torch.Tensor,
+    jacobian: Optional[torch.Tensor] = None,
+) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+    """Apply Ceres' robust loss correction to a residual block.
+
+    This follows `internal/ceres/corrector.cc`: residuals are scaled by
+    `sqrt(rho')`, and for convex robustifiers (`rho'' > 0`) the Jacobian also
+    receives the Triggs rank-1 correction. For the common concave outlier
+    region (`rho'' <= 0`), Ceres deliberately skips the curvature correction.
+    """
+
+    sq_norm = torch.sum(residual * residual)
+    rho0, rho1, rho2 = loss_or_trivial(loss).evaluate(sq_norm)
+    sqrt_rho1 = torch.sqrt(torch.clamp(rho1, min=0.0))
+    residual_scaling = sqrt_rho1
+    alpha_sq_norm = residual.new_zeros(())
+
+    if bool((sq_norm > 0.0).detach().cpu()) and bool((rho2 > 0.0).detach().cpu()):
+        if bool((rho1 <= 0.0).detach().cpu()):
+            raise ValueError("Loss function has rho'' > 0 but rho' <= 0")
+        discriminant = 1.0 + 2.0 * sq_norm * rho2 / rho1
+        alpha = 1.0 - torch.sqrt(discriminant)
+        residual_scaling = sqrt_rho1 / (1.0 - alpha)
+        alpha_sq_norm = alpha / sq_norm
+
+    corrected_residual = residual_scaling * residual
+    corrected_jacobian = None
+    if jacobian is not None:
+        if bool((alpha_sq_norm == 0.0).detach().cpu()):
+            corrected_jacobian = sqrt_rho1 * jacobian
+        else:
+            rTj = residual.reshape(1, -1) @ jacobian
+            corrected_jacobian = sqrt_rho1 * (jacobian - alpha_sq_norm * residual.reshape(-1, 1) @ rTj)
+    return 0.5 * rho0, corrected_residual, corrected_jacobian

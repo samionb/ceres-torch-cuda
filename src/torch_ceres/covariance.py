@@ -57,10 +57,13 @@ class Covariance:
         if S.numel() == 0:
             return False
         threshold = self._svd_threshold(S, J.shape)
+        rank = int(torch.sum(S > threshold).detach().cpu())
         inv_s2 = torch.where(S > threshold, 1.0 / (S * S), torch.zeros_like(S))
         if self.options.null_space_rank > 0 and self.options.null_space_rank < inv_s2.numel():
             inv_s2[-self.options.null_space_rank :] = 0.0
         self._tangent_covariance = (Vh.T * inv_s2) @ Vh
+        if rank < J.shape[1] and self.options.null_space_rank == 0:
+            return False
         if torch.any((S / S.max()) < self.options.min_reciprocal_condition_number) and self.options.null_space_rank == 0:
             return False
         return True
@@ -105,4 +108,3 @@ class Covariance:
         if self.options.column_pivot_threshold >= 0:
             return singular_values.new_tensor(self.options.column_pivot_threshold)
         return 20.0 * (shape[0] + shape[1]) * torch.finfo(singular_values.dtype).eps * singular_values.max()
-

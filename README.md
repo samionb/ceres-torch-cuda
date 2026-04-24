@@ -8,11 +8,12 @@ and PyTorch tensors.
 This first implementation slice includes:
 
 - Ceres-like `Problem`, `SolverOptions`, `solve`, `CostFunction`, `LossFunction`,
-  `Manifold`, `Covariance`, and `GradientProblem` APIs.
+  `Manifold`, `Covariance`, and `GradientProblem` APIs. Common Ceres-style
+  CamelCase aliases are also available on `Problem`.
 - PyTorch autograd, analytic, and numeric-differentiated residual blocks.
 - Robust losses, common manifolds, rotation utilities, interpolation helpers,
-  dense/iterative linear solvers, trust-region LM/dogleg, line-search fallback,
-  and covariance blocks.
+  Ceres-style robust loss correction, dense/iterative linear solvers,
+  trust-region LM/dogleg, line-search fallback, and covariance blocks.
 - CPU execution with device/dtype propagation. CUDA works when the installed
   PyTorch build supports it.
 - Optional-extension placeholders for future cuDSS/cuSPARSE and block-Schur
@@ -43,7 +44,6 @@ print(x, summary.BriefReport())
 ## Development
 
 ```powershell
-cd C:\Git\torch-ceres
+cd C:\Git\ceres-torch-cuda
 python -m pytest
 ```
-
