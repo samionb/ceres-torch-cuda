@@ -135,6 +135,40 @@ def test_solve_line_search_direction_modes_converge_on_rosenbrock(
     torch.testing.assert_close(x, torch.tensor([1.0, 1.0], dtype=torch.float64), atol=1e-4, rtol=1e-4)
 
 
+@pytest.mark.parametrize(
+    "interpolation_type",
+    [
+        tc.LineSearchInterpolationType.BISECTION,
+        tc.LineSearchInterpolationType.QUADRATIC,
+        tc.LineSearchInterpolationType.CUBIC,
+    ],
+)
+def test_solve_line_search_interpolation_modes_converge(interpolation_type: tc.LineSearchInterpolationType) -> None:
+    x = torch.tensor([-1.2, 1.0], dtype=torch.float64)
+    problem = tc.Problem()
+    problem.AddResidualBlock(
+        tc.AutoDiffCostFunction(lambda x: torch.stack([1.0 - x[0], 10.0 * (x[1] - x[0] ** 2)]), [2], 2),
+        None,
+        [x],
+    )
+
+    summary = tc.solve(
+        tc.SolverOptions(
+            minimizer_type=tc.MinimizerType.LINE_SEARCH,
+            line_search_direction_type=tc.LineSearchDirectionType.LBFGS,
+            line_search_interpolation_type=interpolation_type,
+            max_num_iterations=250,
+            function_tolerance=1e-12,
+            gradient_tolerance=1e-8,
+            parameter_tolerance=1e-12,
+        ),
+        problem,
+    )
+
+    assert summary.IsSolutionUsable()
+    torch.testing.assert_close(x, torch.tensor([1.0, 1.0], dtype=torch.float64), atol=1e-4, rtol=1e-4)
+
+
 def test_dense_schur_respects_parameter_ordering_groups() -> None:
     camera = torch.tensor([0.0], dtype=torch.float64)
     point = torch.tensor([0.0], dtype=torch.float64)
@@ -184,6 +218,36 @@ def test_trust_region_radius_expands_after_high_quality_steps() -> None:
     assert len(summary.iterations) >= 3
     assert summary.iterations[2].trust_region_radius > summary.iterations[1].trust_region_radius
     assert summary.iterations[1].step_solver_time_in_seconds >= 0.0
+
+
+def test_inner_iterations_improve_blockwise_nonlinear_problem() -> None:
+    def run(use_inner_iterations: bool) -> tuple[tc.SolverSummary, torch.Tensor, torch.Tensor]:
+        x = torch.tensor([-1.2], dtype=torch.float64)
+        y = torch.tensor([1.0], dtype=torch.float64)
+        problem = tc.Problem()
+        problem.AddResidualBlock(
+            tc.AutoDiffCostFunction(lambda x, y: torch.stack([10.0 * (y[0] - x[0] ** 2), 1.0 - x[0]]), [1, 1], 2),
+            None,
+            [x, y],
+        )
+        summary = tc.solve(
+            tc.SolverOptions(
+                max_num_iterations=10,
+                use_inner_iterations=use_inner_iterations,
+                inner_iteration_tolerance=0.0,
+                gradient_tolerance=0.0,
+                function_tolerance=0.0,
+                parameter_tolerance=0.0,
+            ),
+            problem,
+        )
+        return summary, x, y
+
+    plain_summary, _, _ = run(False)
+    inner_summary, _, _ = run(True)
+
+    assert inner_summary.final_cost < plain_summary.final_cost
+    assert inner_summary.num_residual_evaluations > plain_summary.num_residual_evaluations
 
 
 def test_minimizer_progress_to_stdout_logs_iteration(capsys: pytest.CaptureFixture[str]) -> None:

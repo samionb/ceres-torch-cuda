@@ -17,8 +17,8 @@ areas. Status values:
 | Manifolds | `manifold.h`, sphere/line/product/autodiff | `ceres_torch.manifolds` | partial | Identity/Jacobian properties, Ceres-style aliases, right-multiply helper, quaternion layout parity |
 | Rotation helpers | `rotation.h` | `ceres_torch.rotation` | partial | Angle-axis, quaternion, matrix conversions, cross products, and point rotation |
 | Interpolation | `cubic_interpolation.h` | `ceres_torch.interpolation` | partial | Cubic/bicubic sample values and derivatives |
-| Trust region minimizer | `trust_region_minimizer.cc` | `ceres_torch.solver` | partial | LM/dogleg convergence, radius updates, nonmonotonic windows, progress counters |
-| Line search minimizer | `line_search_minimizer.cc` | `ceres_torch.gradient_solver`, `solver` | partial | Armijo/Wolfe, steepest, NCG, BFGS/LBFGS coverage in first/least-squares solvers |
+| Trust region minimizer | `trust_region_minimizer.cc` | `ceres_torch.solver` | partial | LM/dogleg convergence, radius updates, nonmonotonic windows, inner iterations, progress counters |
+| Line search minimizer | `line_search_minimizer.cc` | `ceres_torch.gradient_solver`, `solver` | partial | Armijo/Wolfe, interpolation modes, steepest, NCG, BFGS/LBFGS coverage in first/least-squares solvers |
 | Dense linear solvers | dense QR/Cholesky files | `ceres_torch.linear` | partial | QR/Cholesky residual norms match Ceres tolerances |
 | Sparse/Schur solvers | Schur, CGNR, sparse Cholesky files | `ceres_torch.linear`, `schur` | partial | Dense Schur with ordering, pure PyTorch iterative paths, optional sparse/block-Schur backend registry |
 | Preconditioners | Jacobi, Schur, cluster, subset files | `ceres_torch.linear` | partial | Identity/Jacobi plus pure-core diagonal Schur/cluster/subset aliases; exact block forms planned |

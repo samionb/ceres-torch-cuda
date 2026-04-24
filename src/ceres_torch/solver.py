@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import time
 
 import torch
@@ -10,6 +11,7 @@ from .types import (
     CallbackReturnType,
     IterationSummary,
     LineSearchDirectionType,
+    LineSearchInterpolationType,
     LineSearchType,
     LinearSolverType,
     MinimizerType,
@@ -160,6 +162,16 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
             consecutive_invalid = 0
             summary.num_successful_steps += 1
             summary.final_cost = candidate_cost
+            candidate_cost, inner_steps = _run_inner_iterations(
+                problem,
+                active_blocks,
+                options,
+                current_cost=candidate_cost,
+            )
+            if inner_steps:
+                summary.num_residual_evaluations += inner_steps
+                summary.final_cost = candidate_cost
+                iter_summary.cost_change = cost - candidate_cost
             iter_summary.step_is_nonmonotonic = candidate_cost > cost
             radius = _updated_trust_region_radius(
                 radius,
@@ -301,6 +313,8 @@ def _line_search_solve(options: SolverOptions, problem: Problem) -> SolverSummar
         for trial_direction in directions:
             step_size = 1.0
             trial_derivative = torch.dot(g, trial_direction)
+            previous_step_size: float | None = None
+            previous_candidate_cost: float | None = None
             for ls_iter in range(options.max_num_line_search_step_size_iterations):
                 problem.restore(snapshot)
                 problem.apply_delta(step_size * trial_direction, active_blocks=active_blocks)
@@ -330,7 +344,18 @@ def _line_search_solve(options: SolverOptions, problem: Problem) -> SolverSummar
                     iter_summary.step_is_successful = True
                     summary.num_successful_steps += 1
                     break
-                step_size *= options.min_line_search_step_contraction
+                next_step_size = _next_line_search_step_size(
+                    options,
+                    step_size=step_size,
+                    cost=cost,
+                    candidate_cost=candidate_cost,
+                    directional_derivative=float(trial_derivative.detach().cpu()),
+                    previous_step_size=previous_step_size,
+                    previous_candidate_cost=previous_candidate_cost,
+                )
+                previous_step_size = step_size
+                previous_candidate_cost = candidate_cost
+                step_size = next_step_size
                 if step_size < options.min_line_search_step_size:
                     break
             if accepted:
@@ -456,6 +481,124 @@ def _model_decrease(J: torch.Tensor, r: torch.Tensor, step: torch.Tensor) -> flo
     after_r = r + J @ step
     after = 0.5 * torch.dot(after_r, after_r)
     return float(torch.clamp(before - after, min=0.0).detach().cpu())
+
+
+def _run_inner_iterations(
+    problem: Problem,
+    active_blocks: list[ParameterBlock],
+    options: SolverOptions,
+    *,
+    current_cost: float,
+) -> tuple[float, int]:
+    if not options.use_inner_iterations:
+        return current_cost, 0
+    evaluations = 0
+    for block in active_blocks:
+        if block.tangent_size == 0:
+            continue
+        evaluation = problem.evaluate(
+            EvaluateOptions(parameter_blocks=[block], new_evaluation_point=False),
+            compute_jacobian=True,
+        )
+        J = evaluation.jacobian
+        if J is None or J.shape[1] == 0:
+            continue
+        step = solve_linear_system(
+            J,
+            -evaluation.residuals,
+            solver_type=LinearSolverType.DENSE_QR,
+            tolerance=options.eta,
+            max_iterations=options.max_linear_solver_iterations,
+        ).x
+        if not torch.all(torch.isfinite(step)):
+            continue
+        snapshot = problem.snapshot()
+        problem.apply_delta(step, active_blocks=[block])
+        candidate = problem.evaluate(EvaluateOptions(new_evaluation_point=False), compute_jacobian=False)
+        evaluations += 1
+        candidate_cost = float(candidate.cost.detach().cpu())
+        improvement = current_cost - candidate_cost
+        required = options.inner_iteration_tolerance * max(abs(current_cost), 1e-12)
+        if improvement > 0.0 and improvement >= required:
+            current_cost = candidate_cost
+        else:
+            problem.restore(snapshot)
+    return current_cost, evaluations
+
+
+def _next_line_search_step_size(
+    options: SolverOptions,
+    *,
+    step_size: float,
+    cost: float,
+    candidate_cost: float,
+    directional_derivative: float,
+    previous_step_size: float | None,
+    previous_candidate_cost: float | None,
+) -> float:
+    if options.line_search_interpolation_type is LineSearchInterpolationType.BISECTION:
+        next_step_size = 0.5 * step_size
+    elif options.line_search_interpolation_type is LineSearchInterpolationType.QUADRATIC:
+        next_step_size = _quadratic_interpolation_step(step_size, cost, candidate_cost, directional_derivative)
+    else:
+        next_step_size = _cubic_interpolation_step(
+            step_size,
+            cost,
+            candidate_cost,
+            directional_derivative,
+            previous_step_size,
+            previous_candidate_cost,
+        )
+    lower_factor = max(0.5, min(options.max_line_search_step_contraction, options.min_line_search_step_contraction))
+    lower = step_size * lower_factor
+    upper = step_size * max(options.max_line_search_step_contraction, options.min_line_search_step_contraction)
+    return min(max(next_step_size, lower), upper)
+
+
+def _quadratic_interpolation_step(
+    step_size: float,
+    cost: float,
+    candidate_cost: float,
+    directional_derivative: float,
+) -> float:
+    denom = 2.0 * (candidate_cost - cost - directional_derivative * step_size)
+    if denom <= 0.0 or not math.isfinite(denom):
+        return 0.5 * step_size
+    step = -(directional_derivative * step_size * step_size) / denom
+    return step if math.isfinite(step) and step > 0.0 else 0.5 * step_size
+
+
+def _cubic_interpolation_step(
+    step_size: float,
+    cost: float,
+    candidate_cost: float,
+    directional_derivative: float,
+    previous_step_size: float | None,
+    previous_candidate_cost: float | None,
+) -> float:
+    if previous_step_size is None or previous_candidate_cost is None or previous_step_size == step_size:
+        return _quadratic_interpolation_step(step_size, cost, candidate_cost, directional_derivative)
+    t1, t2 = previous_step_size, step_size
+    y1 = previous_candidate_cost - cost - directional_derivative * t1
+    y2 = candidate_cost - cost - directional_derivative * t2
+    det = t1 * t1 * t2 * t2 * (t2 - t1)
+    if det == 0.0 or not math.isfinite(det):
+        return _quadratic_interpolation_step(step_size, cost, candidate_cost, directional_derivative)
+    c2 = (y1 * t2**3 - y2 * t1**3) / det
+    c3 = (y2 * t1 * t1 - y1 * t2 * t2) / det
+    if not math.isfinite(c2) or not math.isfinite(c3):
+        return _quadratic_interpolation_step(step_size, cost, candidate_cost, directional_derivative)
+    if abs(c3) < 1e-30:
+        return _quadratic_interpolation_step(step_size, cost, candidate_cost, directional_derivative)
+    discriminant = c2 * c2 - 3.0 * c3 * directional_derivative
+    if discriminant < 0.0:
+        return _quadratic_interpolation_step(step_size, cost, candidate_cost, directional_derivative)
+    roots = [
+        (-c2 + math.sqrt(discriminant)) / (3.0 * c3),
+        (-c2 - math.sqrt(discriminant)) / (3.0 * c3),
+    ]
+    candidates = [root for root in roots if math.isfinite(root) and root > 0.0 and root < step_size]
+    return min(candidates, default=_quadratic_interpolation_step(step_size, cost, candidate_cost, directional_derivative))
 
 
 def _updated_trust_region_radius(
