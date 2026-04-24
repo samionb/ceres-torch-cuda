@@ -55,3 +55,6 @@ areas. Status values:
 - `tiny_bundle_adjustment.py`
 - `sampled_function.py`
 - `pose_graph_2d.py`
+- `circle_fit.py`
+- `iteration_callback_example.py`
+- `evaluation_callback_example.py`
