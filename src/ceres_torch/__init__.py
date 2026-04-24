@@ -1,4 +1,4 @@
-from .callbacks import IterationCallback, LoggingCallback
+from .callbacks import EvaluationCallback, IterationCallback, LoggingCallback
 from .costs import (
     AnalyticCostFunction,
     AutoDiffCostFunction,
@@ -50,11 +50,10 @@ from .manifolds import (
     SubsetManifold,
 )
 from .ordered_groups import OrderedGroups, ParameterBlockOrdering
-from .problem import CRSMatrix, EvaluateOptions, EvaluationResult, ParameterBlock, Problem, ResidualBlock
+from .problem import CRSMatrix, EvaluateOptions, EvaluationResult, ParameterBlock, Problem, ProblemOptions, ResidualBlock
 from .rotation import *
 from .solver import solve
 from .tiny_solver import TinySolver, TinySolverOptions, TinySolverSummary
 from .types import *
 
 __all__ = [name for name in globals() if not name.startswith("_")]
-

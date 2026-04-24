@@ -10,6 +10,11 @@ class IterationCallback(Protocol):
         ...
 
 
+class EvaluationCallback(Protocol):
+    def prepare_for_evaluation(self, evaluate_jacobians: bool, new_evaluation_point: bool) -> None:
+        ...
+
+
 class LoggingCallback:
     def __init__(self, to_stdout: bool = True) -> None:
         self.to_stdout = to_stdout
@@ -26,4 +31,3 @@ class LoggingCallback:
                 f"mu:{summary.trust_region_radius: .3e}"
             )
         return CallbackReturnType.SOLVER_CONTINUE
-

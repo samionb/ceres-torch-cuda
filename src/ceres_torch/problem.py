@@ -5,6 +5,7 @@ from typing import Iterable, Optional, Sequence
 
 import torch
 
+from .callbacks import EvaluationCallback
 from .costs import CallableCostFunction, CostFunction
 from .losses import LossFunction, robustify_residual_and_jacobian
 from .manifolds import EuclideanManifold, Manifold
@@ -31,6 +32,13 @@ class CRSMatrix:
             rows.append(len(cols))
         return cls(cpu.shape[0], cpu.shape[1], rows, cols, values)
 
+    def to_dense(self, *, dtype: torch.dtype = torch.float64, device: torch.device | str = "cpu") -> torch.Tensor:
+        matrix = torch.zeros((self.num_rows, self.num_cols), dtype=dtype, device=device)
+        for row in range(self.num_rows):
+            for idx in range(self.rows[row], self.rows[row + 1]):
+                matrix[row, self.cols[idx]] = self.values[idx]
+        return matrix
+
 
 @dataclass(eq=False)
 class ParameterBlock:
@@ -41,10 +49,12 @@ class ParameterBlock:
     lower_bound: Optional[torch.Tensor] = None
     upper_bound: Optional[torch.Tensor] = None
     ordering_group: Optional[int] = None
+    has_explicit_manifold: bool = field(init=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.tensor, torch.Tensor):
             raise TypeError("ParameterBlock tensor must be a torch.Tensor")
+        self.has_explicit_manifold = self.manifold is not None
         if self.manifold is None:
             self.manifold = EuclideanManifold(self.tensor.numel())
         if self.manifold.ambient_size != self.tensor.numel():
@@ -92,6 +102,7 @@ class EvaluateOptions:
     residual_blocks: Optional[Sequence[ResidualBlock]] = None
     apply_loss_function: bool = True
     num_threads: int = 1
+    new_evaluation_point: bool = True
 
 
 @dataclass
@@ -103,8 +114,18 @@ class EvaluationResult:
     crs_jacobian: Optional[CRSMatrix] = None
 
 
+@dataclass
+class ProblemOptions:
+    enable_fast_removal: bool = False
+    disable_all_safety_checks: bool = False
+    evaluation_callback: Optional[EvaluationCallback] = None
+
+
 class Problem:
-    def __init__(self) -> None:
+    def __init__(self, options: Optional[ProblemOptions] = None, *, evaluation_callback: Optional[EvaluationCallback] = None) -> None:
+        self.options = options or ProblemOptions()
+        if evaluation_callback is not None:
+            self.options.evaluation_callback = evaluation_callback
         self.parameter_blocks: list[ParameterBlock] = []
         self.residual_blocks: list[ResidualBlock] = []
         self._tensor_to_block: dict[int, ParameterBlock] = {}
@@ -124,6 +145,7 @@ class Problem:
             block = self._tensor_to_block[key]
             if manifold is not None:
                 block.manifold = manifold
+                block.has_explicit_manifold = True
             if name is not None:
                 block.name = name
             return block
@@ -180,17 +202,30 @@ class Problem:
     SetParameterBlockVariable = set_parameter_block_variable
 
     def is_parameter_block_constant(self, parameter_block: ParameterBlock | torch.Tensor) -> bool:
-        return self._coerce_parameter_block(parameter_block).constant
+        block = self._coerce_parameter_block(parameter_block)
+        return block.constant or block.manifold.tangent_size == 0
 
     IsParameterBlockConstant = is_parameter_block_constant
 
     def set_manifold(self, parameter_block: ParameterBlock | torch.Tensor, manifold: Optional[Manifold]) -> None:
         block = self._coerce_parameter_block(parameter_block)
         block.manifold = manifold or EuclideanManifold(block.size)
+        block.has_explicit_manifold = manifold is not None
         if block.manifold.ambient_size != block.size:
             raise ValueError("Manifold ambient size must equal parameter block size")
 
     SetManifold = set_manifold
+
+    def get_manifold(self, parameter_block: ParameterBlock | torch.Tensor) -> Optional[Manifold]:
+        block = self._require_parameter_block(parameter_block)
+        return block.manifold if block.has_explicit_manifold else None
+
+    GetManifold = get_manifold
+
+    def has_manifold(self, parameter_block: ParameterBlock | torch.Tensor) -> bool:
+        return self._require_parameter_block(parameter_block).has_explicit_manifold
+
+    HasManifold = has_manifold
 
     def set_bounds(
         self,
@@ -211,7 +246,7 @@ class Problem:
         lb = (
             block.lower_bound.clone()
             if block.lower_bound is not None
-            else torch.full_like(block.tensor.reshape(-1), -torch.inf)
+            else torch.full_like(block.tensor.reshape(-1), -torch.finfo(block.dtype).max)
         )
         lb.reshape(-1)[index] = lower
         block.lower_bound = lb.reshape_as(block.tensor)
@@ -223,12 +258,28 @@ class Problem:
         ub = (
             block.upper_bound.clone()
             if block.upper_bound is not None
-            else torch.full_like(block.tensor.reshape(-1), torch.inf)
+            else torch.full_like(block.tensor.reshape(-1), torch.finfo(block.dtype).max)
         )
         ub.reshape(-1)[index] = upper
         block.upper_bound = ub.reshape_as(block.tensor)
 
     SetParameterUpperBound = set_parameter_upper_bound
+
+    def get_parameter_lower_bound(self, parameter_block: ParameterBlock | torch.Tensor, index: int) -> float:
+        block = self._require_parameter_block(parameter_block)
+        if block.lower_bound is None:
+            return -torch.finfo(block.dtype).max
+        return float(block.lower_bound.reshape(-1)[index].detach().cpu())
+
+    GetParameterLowerBound = get_parameter_lower_bound
+
+    def get_parameter_upper_bound(self, parameter_block: ParameterBlock | torch.Tensor, index: int) -> float:
+        block = self._require_parameter_block(parameter_block)
+        if block.upper_bound is None:
+            return torch.finfo(block.dtype).max
+        return float(block.upper_bound.reshape(-1)[index].detach().cpu())
+
+    GetParameterUpperBound = get_parameter_upper_bound
 
     def get_parameter_blocks(self) -> list[ParameterBlock]:
         return list(self.parameter_blocks)
@@ -253,18 +304,69 @@ class Problem:
     def num_effective_parameters(self) -> int:
         return sum(b.tangent_size for b in self.parameter_blocks)
 
+    NumEffectiveParameters = num_effective_parameters
+
     def num_residual_blocks(self) -> int:
         return len(self.residual_blocks)
 
     NumResidualBlocks = num_residual_blocks
 
     def num_residuals(self) -> int:
-        return int(sum(self.evaluate_residual_block(rb, compute_jacobians=False).residuals.numel() for rb in self.residual_blocks))
+        total = 0
+        for rb in self.residual_blocks:
+            if rb.cost_function.num_residuals is not None:
+                total += rb.cost_function.num_residuals
+                continue
+            params = [b.tensor.detach().clone() for b in rb.parameter_blocks]
+            total += rb.cost_function.residuals(*params).numel()
+        return int(total)
 
     NumResiduals = num_residuals
 
+    def has_parameter_block(self, parameter_block: ParameterBlock | torch.Tensor) -> bool:
+        if isinstance(parameter_block, ParameterBlock):
+            return parameter_block in self.parameter_blocks
+        return id(parameter_block) in self._tensor_to_block
+
+    HasParameterBlock = has_parameter_block
+
+    def parameter_block_size(self, parameter_block: ParameterBlock | torch.Tensor) -> int:
+        return self._require_parameter_block(parameter_block).size
+
+    ParameterBlockSize = parameter_block_size
+
+    def parameter_block_tangent_size(self, parameter_block: ParameterBlock | torch.Tensor) -> int:
+        return self._require_parameter_block(parameter_block).manifold.tangent_size
+
+    ParameterBlockTangentSize = parameter_block_tangent_size
+
+    def get_parameter_blocks_for_residual_block(self, residual_block: ResidualBlock) -> list[ParameterBlock]:
+        self._require_residual_block(residual_block)
+        return list(residual_block.parameter_blocks)
+
+    GetParameterBlocksForResidualBlock = get_parameter_blocks_for_residual_block
+
+    def get_cost_function_for_residual_block(self, residual_block: ResidualBlock) -> CostFunction:
+        self._require_residual_block(residual_block)
+        return residual_block.cost_function
+
+    GetCostFunctionForResidualBlock = get_cost_function_for_residual_block
+
+    def get_loss_function_for_residual_block(self, residual_block: ResidualBlock) -> Optional[LossFunction]:
+        self._require_residual_block(residual_block)
+        return residual_block.loss_function
+
+    GetLossFunctionForResidualBlock = get_loss_function_for_residual_block
+
+    def get_residual_blocks_for_parameter_block(self, parameter_block: ParameterBlock | torch.Tensor) -> list[ResidualBlock]:
+        block = self._require_parameter_block(parameter_block)
+        return [rb for rb in self.residual_blocks if block in rb.parameter_blocks]
+
+    GetResidualBlocksForParameterBlock = get_residual_blocks_for_parameter_block
+
     def evaluate(self, options: Optional[EvaluateOptions] = None, *, compute_jacobian: bool = True) -> EvaluationResult:
         options = options or EvaluateOptions()
+        self._prepare_for_evaluation(compute_jacobian, options.new_evaluation_point)
         residual_blocks = list(options.residual_blocks or self.residual_blocks)
         active_blocks = self._selected_parameter_blocks(options.parameter_blocks)
         active_to_col, total_cols = self._active_column_map(active_blocks)
@@ -308,7 +410,10 @@ class Problem:
         *,
         apply_loss_function: bool = True,
         compute_jacobians: bool = True,
+        new_evaluation_point: bool = True,
     ) -> EvaluationResult:
+        self._require_residual_block(residual_block)
+        self._prepare_for_evaluation(compute_jacobians, new_evaluation_point)
         active_to_col, total_cols = self._active_column_map(self.parameter_blocks)
         return self._evaluate_residual_block_internal(
             residual_block,
@@ -319,6 +424,22 @@ class Problem:
         )
 
     EvaluateResidualBlock = evaluate_residual_block
+
+    def evaluate_residual_block_assuming_parameters_unchanged(
+        self,
+        residual_block: ResidualBlock,
+        *,
+        apply_loss_function: bool = True,
+        compute_jacobians: bool = True,
+    ) -> EvaluationResult:
+        return self.evaluate_residual_block(
+            residual_block,
+            apply_loss_function=apply_loss_function,
+            compute_jacobians=compute_jacobians,
+            new_evaluation_point=False,
+        )
+
+    EvaluateResidualBlockAssumingParametersUnchanged = evaluate_residual_block_assuming_parameters_unchanged
 
     def snapshot(self) -> list[torch.Tensor]:
         return [b.clone_value() for b in self.parameter_blocks]
@@ -410,6 +531,25 @@ class Problem:
         if key not in self._tensor_to_block:
             return self.add_parameter_block(value)
         return self._tensor_to_block[key]
+
+    def _require_parameter_block(self, value: ParameterBlock | torch.Tensor) -> ParameterBlock:
+        if isinstance(value, ParameterBlock):
+            if value not in self.parameter_blocks:
+                raise KeyError("Parameter block is not part of this problem")
+            return value
+        key = id(value)
+        if key not in self._tensor_to_block:
+            raise KeyError("Parameter block is not part of this problem")
+        return self._tensor_to_block[key]
+
+    def _require_residual_block(self, residual_block: ResidualBlock) -> None:
+        if residual_block not in self.residual_blocks:
+            raise KeyError("Residual block is not part of this problem")
+
+    def _prepare_for_evaluation(self, evaluate_jacobians: bool, new_evaluation_point: bool) -> None:
+        callback = self.options.evaluation_callback
+        if callback is not None:
+            callback.prepare_for_evaluation(evaluate_jacobians, new_evaluation_point)
 
     def _default_dtype_device(self) -> tuple[torch.dtype, torch.device]:
         if self.parameter_blocks:
