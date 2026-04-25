@@ -161,6 +161,20 @@ def test_catmull_rom_kernel_and_vector_valued_grid1d() -> None:
     torch.testing.assert_close(derivative, torch.tensor([1.0, 2.0], dtype=torch.float64))
 
 
+def test_grid1d_ceres_flat_layouts_and_clamped_window() -> None:
+    interleaved = torch.tensor([1, 5, 2, 6, 3, 7], dtype=torch.float64)
+    stacked = torch.tensor([1, 2, 3, 5, 6, 7], dtype=torch.float64)
+
+    interleaved_grid = tc.Grid1D(interleaved, begin=10, end=13, data_dimension=2, interleaved=True)
+    stacked_grid = tc.Grid1D(stacked, begin=10, end=13, data_dimension=2, interleaved=False)
+
+    torch.testing.assert_close(interleaved_grid.get(11), torch.tensor([2.0, 6.0], dtype=torch.float64))
+    torch.testing.assert_close(stacked_grid.get(11), torch.tensor([2.0, 6.0], dtype=torch.float64))
+    torch.testing.assert_close(stacked_grid.get(9), torch.tensor([1.0, 5.0], dtype=torch.float64))
+    torch.testing.assert_close(stacked_grid.get(99), torch.tensor([3.0, 7.0], dtype=torch.float64))
+    assert interleaved_grid.data_dimension == 2
+
+
 def test_bicubic_interpolator_derivatives_for_planar_data() -> None:
     rows = torch.arange(5, dtype=torch.float64).reshape(-1, 1)
     cols = torch.arange(6, dtype=torch.float64).reshape(1, -1)
@@ -192,3 +206,66 @@ def test_bicubic_interpolator_vector_valued_samples() -> None:
     torch.testing.assert_close(value, torch.tensor([9.5, -3.5], dtype=torch.float64))
     torch.testing.assert_close(drow, torch.tensor([4.0, 2.0], dtype=torch.float64))
     torch.testing.assert_close(dcol, torch.tensor([1.5, -2.0], dtype=torch.float64))
+
+
+def test_grid2d_ceres_flat_storage_layouts() -> None:
+    row_major_interleaved = torch.tensor(
+        [1, 4, 2, 8, 3, 12, 2, 8, 3, 12, 4, 16],
+        dtype=torch.float64,
+    )
+    row_major_stacked = torch.tensor(
+        [1, 2, 3, 2, 3, 4, 4, 8, 12, 8, 12, 16],
+        dtype=torch.float64,
+    )
+    col_major_interleaved = torch.tensor(
+        [1, 4, 2, 8, 2, 8, 3, 12, 3, 12, 4, 16],
+        dtype=torch.float64,
+    )
+    col_major_stacked = torch.tensor(
+        [1, 2, 2, 3, 3, 4, 4, 8, 8, 12, 12, 16],
+        dtype=torch.float64,
+    )
+
+    grids = [
+        tc.Grid2D(row_major_interleaved, row_end=2, col_end=3, data_dimension=2, row_major=True, interleaved=True),
+        tc.Grid2D(row_major_stacked, row_end=2, col_end=3, data_dimension=2, row_major=True, interleaved=False),
+        tc.Grid2D(col_major_interleaved, row_end=2, col_end=3, data_dimension=2, row_major=False, interleaved=True),
+        tc.Grid2D(col_major_stacked, row_end=2, col_end=3, data_dimension=2, row_major=False, interleaved=False),
+    ]
+
+    for grid in grids:
+        for row in range(2):
+            for col in range(3):
+                expected = torch.tensor([row + col + 1.0, 4.0 * (row + col + 1.0)], dtype=torch.float64)
+                torch.testing.assert_close(grid.get(row, col), expected)
+        torch.testing.assert_close(grid.get(-10, -10), torch.tensor([1.0, 4.0], dtype=torch.float64))
+        torch.testing.assert_close(grid.get(10, 10), torch.tensor([4.0, 16.0], dtype=torch.float64))
+
+
+def test_bicubic_interpolator_matches_shaped_grid_with_flat_stacked_data() -> None:
+    rows = torch.arange(5, dtype=torch.float64).reshape(-1, 1)
+    cols = torch.arange(6, dtype=torch.float64).reshape(1, -1)
+    first = 2.0 * rows + 3.0 * cols
+    second = rows - 4.0 * cols
+    shaped = torch.stack([first, second], dim=-1)
+    flat_stacked = torch.cat([first.reshape(-1), second.reshape(-1)])
+
+    shaped_interpolator = tc.BiCubicInterpolator(tc.Grid2D(shaped, row_spacing=0.5, col_spacing=2.0))
+    flat_interpolator = tc.BiCubicInterpolator(
+        tc.Grid2D(
+            flat_stacked,
+            row_spacing=0.5,
+            col_spacing=2.0,
+            row_end=5,
+            col_end=6,
+            data_dimension=2,
+            row_major=True,
+            interleaved=False,
+        )
+    )
+
+    shaped_value = shaped_interpolator.Evaluate(torch.tensor(1.25, dtype=torch.float64), torch.tensor(3.0, dtype=torch.float64))
+    flat_value = flat_interpolator.Evaluate(torch.tensor(1.25, dtype=torch.float64), torch.tensor(3.0, dtype=torch.float64))
+
+    for flat_tensor, shaped_tensor in zip(flat_value, shaped_value):
+        torch.testing.assert_close(flat_tensor, shaped_tensor)

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import torch
 
 
@@ -57,19 +55,67 @@ def cubic_hermite_spline_derivative(
     return dh00 * p0 + dh10 * m0 + dh01 * p1 + dh11 * m1
 
 
-@dataclass
 class Grid1D:
-    data: torch.Tensor
-    x0: float = 0.0
-    spacing: float = 1.0
+    def __init__(
+        self,
+        data: torch.Tensor,
+        x0: float = 0.0,
+        spacing: float = 1.0,
+        *,
+        begin: int = 0,
+        end: int | None = None,
+        data_dimension: int | None = None,
+        interleaved: bool = True,
+    ) -> None:
+        self.data = torch.as_tensor(data)
+        self.x0 = x0
+        self.spacing = spacing
+        self.begin = int(begin)
+        self.interleaved = interleaved
+
+        if self.data.ndim == 1:
+            self._data_dimension = int(data_dimension or 1)
+            if self._data_dimension < 1:
+                raise ValueError("Grid1D data_dimension must be >= 1")
+            if end is None:
+                if self.data.numel() % self._data_dimension != 0:
+                    raise ValueError("Flat Grid1D data length must be divisible by data_dimension")
+                self.end = self.begin + self.data.numel() // self._data_dimension
+            else:
+                self.end = int(end)
+            self._num_values = self.end - self.begin
+            if self._num_values <= 0:
+                raise ValueError("Grid1D requires begin < end")
+            if self.data.numel() != self._num_values * self._data_dimension:
+                raise ValueError("Flat Grid1D data length does not match [begin, end) and data_dimension")
+            self._flat_layout = True
+        else:
+            inferred_dimension = int(torch.tensor(self.data.shape[1:]).prod().item())
+            self._data_dimension = int(data_dimension or inferred_dimension)
+            if self._data_dimension != inferred_dimension:
+                raise ValueError("Shaped Grid1D data_dimension must match trailing tensor dimensions")
+            self.end = int(end) if end is not None else self.begin + self.data.shape[0]
+            self._num_values = self.end - self.begin
+            if self._num_values <= 0:
+                raise ValueError("Grid1D requires begin < end")
+            if self.data.shape[0] != self._num_values:
+                raise ValueError("Shaped Grid1D leading dimension must match [begin, end)")
+            self._flat_layout = False
 
     def get(self, idx: int) -> torch.Tensor:
-        idx = max(0, min(idx, self.data.shape[0] - 1))
-        return self.data[idx]
+        idx = max(self.begin, min(idx, self.end - 1)) - self.begin
+        if not self._flat_layout:
+            return self.data[idx]
+        if self.interleaved:
+            offset = self._data_dimension * idx
+            value = self.data[offset : offset + self._data_dimension]
+        else:
+            value = torch.stack([self.data[channel * self._num_values + idx] for channel in range(self._data_dimension)])
+        return value[0] if self._data_dimension == 1 else value
 
     @property
     def data_dimension(self) -> int:
-        return 1 if self.data.ndim == 1 else int(torch.tensor(self.data.shape[1:]).prod().item())
+        return self._data_dimension
 
 
 class CubicInterpolator:
@@ -100,22 +146,81 @@ class CubicInterpolator:
         return catmull_rom_spline(p0, p1, p2, p3, t), catmull_rom_spline_derivative(p0, p1, p2, p3, t)
 
 
-@dataclass
 class Grid2D:
-    data: torch.Tensor
-    row0: float = 0.0
-    col0: float = 0.0
-    row_spacing: float = 1.0
-    col_spacing: float = 1.0
+    def __init__(
+        self,
+        data: torch.Tensor,
+        row0: float = 0.0,
+        col0: float = 0.0,
+        row_spacing: float = 1.0,
+        col_spacing: float = 1.0,
+        *,
+        row_begin: int = 0,
+        row_end: int | None = None,
+        col_begin: int = 0,
+        col_end: int | None = None,
+        data_dimension: int | None = None,
+        row_major: bool = True,
+        interleaved: bool = True,
+    ) -> None:
+        self.data = torch.as_tensor(data)
+        self.row0 = row0
+        self.col0 = col0
+        self.row_spacing = row_spacing
+        self.col_spacing = col_spacing
+        self.row_begin = int(row_begin)
+        self.col_begin = int(col_begin)
+        self.row_major = row_major
+        self.interleaved = interleaved
+
+        if self.data.ndim == 1:
+            if row_end is None or col_end is None:
+                raise ValueError("Flat Grid2D data requires row_end and col_end")
+            self.row_end = int(row_end)
+            self.col_end = int(col_end)
+            self._data_dimension = int(data_dimension or 1)
+            if self._data_dimension < 1:
+                raise ValueError("Grid2D data_dimension must be >= 1")
+            self._num_rows = self.row_end - self.row_begin
+            self._num_cols = self.col_end - self.col_begin
+            if self._num_rows <= 0 or self._num_cols <= 0:
+                raise ValueError("Grid2D requires row_begin < row_end and col_begin < col_end")
+            self._num_values = self._num_rows * self._num_cols
+            if self.data.numel() != self._num_values * self._data_dimension:
+                raise ValueError("Flat Grid2D data length does not match extents and data_dimension")
+            self._flat_layout = True
+        else:
+            self.row_end = int(row_end) if row_end is not None else self.row_begin + self.data.shape[0]
+            self.col_end = int(col_end) if col_end is not None else self.col_begin + self.data.shape[1]
+            inferred_dimension = 1 if self.data.ndim == 2 else int(torch.tensor(self.data.shape[2:]).prod().item())
+            self._data_dimension = int(data_dimension or inferred_dimension)
+            if self._data_dimension != inferred_dimension:
+                raise ValueError("Shaped Grid2D data_dimension must match trailing tensor dimensions")
+            self._num_rows = self.row_end - self.row_begin
+            self._num_cols = self.col_end - self.col_begin
+            if self._num_rows <= 0 or self._num_cols <= 0:
+                raise ValueError("Grid2D requires row_begin < row_end and col_begin < col_end")
+            if self.data.shape[:2] != (self._num_rows, self._num_cols):
+                raise ValueError("Shaped Grid2D leading dimensions must match extents")
+            self._num_values = self._num_rows * self._num_cols
+            self._flat_layout = False
 
     def get(self, row: int, col: int) -> torch.Tensor:
-        row = max(0, min(row, self.data.shape[0] - 1))
-        col = max(0, min(col, self.data.shape[1] - 1))
-        return self.data[row, col]
+        row_idx = max(self.row_begin, min(row, self.row_end - 1)) - self.row_begin
+        col_idx = max(self.col_begin, min(col, self.col_end - 1)) - self.col_begin
+        if not self._flat_layout:
+            return self.data[row_idx, col_idx]
+        linear = self._num_cols * row_idx + col_idx if self.row_major else self._num_rows * col_idx + row_idx
+        if self.interleaved:
+            offset = self._data_dimension * linear
+            value = self.data[offset : offset + self._data_dimension]
+        else:
+            value = torch.stack([self.data[channel * self._num_values + linear] for channel in range(self._data_dimension)])
+        return value[0] if self._data_dimension == 1 else value
 
     @property
     def data_dimension(self) -> int:
-        return 1 if self.data.ndim == 2 else int(torch.tensor(self.data.shape[2:]).prod().item())
+        return self._data_dimension
 
 
 class BiCubicInterpolator:
