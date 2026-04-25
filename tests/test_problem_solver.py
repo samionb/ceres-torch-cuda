@@ -2,6 +2,7 @@ import torch
 import pytest
 
 import ceres_torch as tc
+from ceres_torch.solver import _LevenbergMarquardtRadiusState, _TrustRegionStepEvaluator
 
 
 def test_problem_evaluate_autodiff_jacobian() -> None:
@@ -296,6 +297,35 @@ def test_trust_region_radius_expands_after_high_quality_steps() -> None:
     assert summary.iterations[1].step_solver_time_in_seconds >= 0.0
 
 
+def test_levenberg_marquardt_radius_update_matches_ceres_strategy() -> None:
+    state = _LevenbergMarquardtRadiusState(radius=2.0, max_radius=20.0)
+
+    assert state.radius == 2.0
+    assert state.step_rejected() == 1.0
+    assert state.step_rejected() == 0.25
+    assert state.step_accepted(1.0) == pytest.approx(0.75)
+    assert state.step_accepted(1.0) == pytest.approx(2.25)
+    assert state.step_accepted(0.25) == pytest.approx(2.0)
+    assert state.step_accepted(1.0) == pytest.approx(6.0)
+    assert state.step_accepted(1.0) == pytest.approx(18.0)
+    assert state.step_accepted(1.0) == pytest.approx(20.0)
+
+
+def test_nonmonotonic_step_evaluator_uses_accumulated_model_change() -> None:
+    evaluator = _TrustRegionStepEvaluator(initial_cost=10.0, max_consecutive_nonmonotonic_steps=2)
+
+    assert evaluator.step_quality(9.0, 2.0) == pytest.approx(0.5)
+    evaluator.step_accepted(9.0, 2.0)
+
+    assert evaluator.step_quality(9.5, 1.0) == pytest.approx(1.0 / 6.0)
+    evaluator.step_accepted(9.5, 1.0)
+
+    assert evaluator.step_quality(9.4, 1.0) == pytest.approx(0.15)
+    evaluator.step_accepted(9.4, 1.0)
+
+    assert evaluator.step_quality(9.6, 1.0) == pytest.approx(-0.05)
+
+
 def test_inner_iterations_improve_blockwise_nonlinear_problem() -> None:
     def run(use_inner_iterations: bool) -> tuple[tc.SolverSummary, torch.Tensor, torch.Tensor]:
         x = torch.tensor([-1.2], dtype=torch.float64)
@@ -327,7 +357,7 @@ def test_inner_iterations_improve_blockwise_nonlinear_problem() -> None:
 
 
 def test_nonmonotonic_trust_region_restores_best_state_for_callbacks_and_final_state() -> None:
-    x = torch.tensor([-7.5], dtype=torch.float64)
+    x = torch.tensor([-20.0], dtype=torch.float64)
     problem = tc.Problem()
     problem.AddParameterBlock(x)
     problem.AddResidualBlock(
@@ -344,12 +374,12 @@ def test_nonmonotonic_trust_region_restores_best_state_for_callbacks_and_final_s
 
     summary = tc.solve(
         tc.SolverOptions(
-            max_num_iterations=11,
+            max_num_iterations=8,
             use_nonmonotonic_steps=True,
             max_consecutive_nonmonotonic_steps=5,
             update_state_every_iteration=True,
             callbacks=[callback],
-            initial_trust_region_radius=1.0,
+            initial_trust_region_radius=0.01,
             gradient_tolerance=0.0,
             function_tolerance=0.0,
             parameter_tolerance=0.0,

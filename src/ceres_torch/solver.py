@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 
 import torch
 
@@ -35,17 +36,20 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
     summary = _new_summary(options, problem)
     active_blocks = _linear_solver_parameter_order(problem)
     num_eliminate = _num_eliminate_for_schur(active_blocks, _effective_linear_solver(options.linear_solver_type))
-    radius = options.initial_trust_region_radius
+    lm_radius = _LevenbergMarquardtRadiusState(options.initial_trust_region_radius, options.max_trust_region_radius)
+    radius = lm_radius.radius
     consecutive_invalid = 0
     previous_cost: float | None = None
-    cost_window: list[float] = []
 
     initial = problem.evaluate(EvaluateOptions(parameter_blocks=active_blocks), compute_jacobian=True)
     summary.initial_cost = float(initial.cost.detach().cpu())
     summary.final_cost = summary.initial_cost
     best_cost = summary.initial_cost
     best_snapshot = problem.snapshot()
-    cost_window.append(summary.initial_cost)
+    step_evaluator = _TrustRegionStepEvaluator(
+        summary.initial_cost,
+        options.max_consecutive_nonmonotonic_steps if options.use_nonmonotonic_steps else 0,
+    )
     if initial.gradient is None:
         summary.termination_type = TerminationType.CONVERGENCE
         summary.message = "No active parameters."
@@ -129,7 +133,11 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
 
         if not torch.all(torch.isfinite(step)):
             consecutive_invalid += 1
-            radius = max(radius * 0.25, options.min_trust_region_radius)
+            radius = _rejected_trust_region_radius(
+                options.trust_region_strategy_type,
+                radius,
+                lm_radius,
+            )
             iter_summary.step_is_valid = False
             iter_summary.step_is_successful = False
             summary.num_unsuccessful_steps += 1
@@ -165,23 +173,11 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
         candidate = problem.evaluate(compute_jacobian=False)
         summary.num_residual_evaluations += 1
         candidate_cost = float(candidate.cost.detach().cpu())
-        reference_cost = max(cost_window) if options.use_nonmonotonic_steps else cost
-        actual_decrease = reference_cost - candidate_cost
         model_decrease = _model_decrease(J, r, step)
-        rho = actual_decrease / max(model_decrease, torch.finfo(J.dtype).eps)
-        accepted = actual_decrease > 0 and rho >= options.min_relative_decrease
-
-        iter_summary.step_norm = float(torch.linalg.norm(step).detach().cpu())
-        iter_summary.cost_change = cost - candidate_cost
-        iter_summary.relative_decrease = float(rho)
-        iter_summary.linear_solver_iterations = linear_iterations
-        iter_summary.step_solver_time_in_seconds = linear_time
-        iter_summary.iteration_time_in_seconds = time.perf_counter() - iter_start
-        iter_summary.cumulative_time_in_seconds = time.perf_counter() - start
-
-        if accepted:
-            consecutive_invalid = 0
-            summary.num_successful_steps += 1
+        step_is_valid = model_decrease > 0.0
+        inner_iterations_were_useful = False
+        if step_is_valid and options.use_inner_iterations:
+            trust_region_candidate_cost = candidate_cost
             candidate_cost, inner_steps = _run_inner_iterations(
                 problem,
                 active_blocks,
@@ -190,7 +186,25 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
             )
             if inner_steps:
                 summary.num_residual_evaluations += inner_steps
-                iter_summary.cost_change = cost - candidate_cost
+            inner_model_decrease = trust_region_candidate_cost - candidate_cost
+            model_decrease += inner_model_decrease
+            inner_iterations_were_useful = candidate_cost < min(cost, trust_region_candidate_cost)
+        rho = step_evaluator.step_quality(candidate_cost, model_decrease) if step_is_valid else 0.0
+        accepted = step_is_valid and (inner_iterations_were_useful or rho > options.min_relative_decrease)
+
+        iter_summary.step_norm = float(torch.linalg.norm(step).detach().cpu())
+        iter_summary.cost_change = cost - candidate_cost
+        iter_summary.relative_decrease = float(rho)
+        iter_summary.step_is_valid = step_is_valid
+        iter_summary.linear_solver_iterations = linear_iterations
+        iter_summary.step_solver_time_in_seconds = linear_time
+        iter_summary.iteration_time_in_seconds = time.perf_counter() - iter_start
+        iter_summary.cumulative_time_in_seconds = time.perf_counter() - start
+
+        if accepted:
+            consecutive_invalid = 0
+            summary.num_successful_steps += 1
+            step_evaluator.step_accepted(candidate_cost, model_decrease)
             if candidate_cost < best_cost:
                 best_cost = candidate_cost
                 best_snapshot = problem.snapshot()
@@ -198,23 +212,26 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
             else:
                 iter_summary.step_is_nonmonotonic = candidate_cost > best_cost
             summary.final_cost = best_cost
-            radius = _updated_trust_region_radius(
+            radius = _accepted_trust_region_radius(
+                options.trust_region_strategy_type,
                 radius,
                 rho,
                 iter_summary.step_norm,
-                options.max_trust_region_radius,
+                lm_radius,
             )
+            iter_summary.trust_region_radius = radius
             iter_summary.step_is_successful = True
-            cost_window.append(candidate_cost)
-            max_window = max(1, options.max_consecutive_nonmonotonic_steps + 1)
-            if len(cost_window) > max_window:
-                cost_window.pop(0)
             if options.update_state_every_iteration:
                 pass
         else:
             problem.restore(snapshot)
             summary.num_unsuccessful_steps += 1
-            radius = max(options.min_trust_region_radius, radius * 0.25)
+            radius = _rejected_trust_region_radius(
+                options.trust_region_strategy_type,
+                radius,
+                lm_radius,
+            )
+            iter_summary.trust_region_radius = radius
             iter_summary.step_is_successful = False
 
         summary.iterations.append(iter_summary)
@@ -524,6 +541,87 @@ def _model_decrease(J: torch.Tensor, r: torch.Tensor, step: torch.Tensor) -> flo
     after_r = r + J @ step
     after = 0.5 * torch.dot(after_r, after_r)
     return float(torch.clamp(before - after, min=0.0).detach().cpu())
+
+
+@dataclass
+class _LevenbergMarquardtRadiusState:
+    radius: float
+    max_radius: float
+    decrease_factor: float = 2.0
+
+    def step_accepted(self, step_quality: float) -> float:
+        denominator = max(1.0 / 3.0, 1.0 - (2.0 * step_quality - 1.0) ** 3)
+        self.radius = min(self.max_radius, self.radius / denominator)
+        self.decrease_factor = 2.0
+        return self.radius
+
+    def step_rejected(self) -> float:
+        self.radius = self.radius / self.decrease_factor
+        self.decrease_factor *= 2.0
+        return self.radius
+
+
+class _TrustRegionStepEvaluator:
+    def __init__(self, initial_cost: float, max_consecutive_nonmonotonic_steps: int) -> None:
+        self.max_consecutive_nonmonotonic_steps = max(0, int(max_consecutive_nonmonotonic_steps))
+        self.minimum_cost = initial_cost
+        self.current_cost = initial_cost
+        self.reference_cost = initial_cost
+        self.candidate_cost = initial_cost
+        self.accumulated_reference_model_cost_change = 0.0
+        self.accumulated_candidate_model_cost_change = 0.0
+        self.num_consecutive_nonmonotonic_steps = 0
+
+    def step_quality(self, cost: float, model_cost_change: float) -> float:
+        if model_cost_change <= 0.0:
+            return float("-inf")
+        relative_decrease = (self.current_cost - cost) / model_cost_change
+        historical_relative_decrease = (self.reference_cost - cost) / (
+            self.accumulated_reference_model_cost_change + model_cost_change
+        )
+        return max(relative_decrease, historical_relative_decrease)
+
+    def step_accepted(self, cost: float, model_cost_change: float) -> None:
+        self.current_cost = cost
+        self.accumulated_candidate_model_cost_change += model_cost_change
+        self.accumulated_reference_model_cost_change += model_cost_change
+
+        if self.current_cost < self.minimum_cost:
+            self.minimum_cost = self.current_cost
+            self.num_consecutive_nonmonotonic_steps = 0
+            self.candidate_cost = self.current_cost
+            self.accumulated_candidate_model_cost_change = 0.0
+        else:
+            self.num_consecutive_nonmonotonic_steps += 1
+            if self.current_cost > self.candidate_cost:
+                self.candidate_cost = self.current_cost
+                self.accumulated_candidate_model_cost_change = 0.0
+
+        if self.num_consecutive_nonmonotonic_steps == self.max_consecutive_nonmonotonic_steps:
+            self.reference_cost = self.candidate_cost
+            self.accumulated_reference_model_cost_change = self.accumulated_candidate_model_cost_change
+
+
+def _accepted_trust_region_radius(
+    strategy_type: TrustRegionStrategyType,
+    radius: float,
+    rho: float,
+    step_norm: float,
+    lm_radius: _LevenbergMarquardtRadiusState,
+) -> float:
+    if strategy_type is TrustRegionStrategyType.LEVENBERG_MARQUARDT:
+        return lm_radius.step_accepted(rho)
+    return _updated_trust_region_radius(radius, rho, step_norm, lm_radius.max_radius)
+
+
+def _rejected_trust_region_radius(
+    strategy_type: TrustRegionStrategyType,
+    radius: float,
+    lm_radius: _LevenbergMarquardtRadiusState,
+) -> float:
+    if strategy_type is TrustRegionStrategyType.LEVENBERG_MARQUARDT:
+        return lm_radius.step_rejected()
+    return radius * 0.25
 
 
 def _has_bounds(blocks: list[ParameterBlock]) -> bool:
