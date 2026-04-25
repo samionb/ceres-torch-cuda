@@ -107,12 +107,16 @@ from .sparse_backends import (
     native_sparse_backends_available,
     register_native_sparse_backends,
     register_scipy_sparse_backends,
+    register_suitesparseqr_sparse_qr_backend,
     scipy_sparse_available,
     scipy_sparse_normal_cholesky,
     scipy_sparse_qr_covariance,
     scipy_sparse_schur,
+    suitesparseqr_available,
+    suitesparseqr_sparse_qr_covariance,
     unregister_native_sparse_backends,
     unregister_scipy_sparse_backends,
+    unregister_suitesparseqr_sparse_qr_backend,
 )
 from .testing import (
     GoldenSolverResult,

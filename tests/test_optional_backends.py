@@ -188,3 +188,44 @@ def test_scipy_native_sparse_covariance_backend_matches_dense_svd() -> None:
         atol=1e-10,
         rtol=1e-10,
     )
+
+
+def test_suitesparseqr_covariance_backend_uses_qr_factorization(monkeypatch: pytest.MonkeyPatch) -> None:
+    sp = pytest.importorskip("scipy.sparse")
+    import numpy as np
+    import ceres_torch.sparse_backends as sparse_backends
+
+    class FakeSuiteSparseQR:
+        def qr(self, matrix):
+            dense = torch.as_tensor(matrix.toarray(), dtype=torch.float64)
+            _Q, R = torch.linalg.qr(dense, mode="reduced")
+            return None, sp.csc_matrix(R.numpy()), np.arange(matrix.shape[1])
+
+    monkeypatch.setattr(sparse_backends, "_suitesparseqr_module", lambda: FakeSuiteSparseQR())
+    J = torch.tensor(
+        [
+            [2.0, 0.0],
+            [1.0, 3.0],
+            [0.5, -1.0],
+        ],
+        dtype=torch.float64,
+    )
+
+    covariance = tc.suitesparseqr_sparse_qr_covariance(J)
+    expected = torch.linalg.inv(J.T @ J)
+    torch.testing.assert_close(covariance, expected, atol=1e-10, rtol=1e-10)
+
+
+def test_suitesparseqr_registration_overrides_sparse_qr_slot(monkeypatch: pytest.MonkeyPatch) -> None:
+    pytest.importorskip("scipy")
+    import ceres_torch.sparse_backends as sparse_backends
+
+    monkeypatch.setattr(sparse_backends, "_find_suitesparseqr_module_name", lambda: "sparseqr")
+    info = tc.register_suitesparseqr_sparse_qr_backend()
+    try:
+        assert info.available
+        assert info.backend == "sparseqr"
+        assert info.registered == ("sparse_qr_covariance",)
+        assert tc.get_optional_backend("sparse_qr_covariance") is tc.suitesparseqr_sparse_qr_covariance
+    finally:
+        tc.unregister_suitesparseqr_sparse_qr_backend()

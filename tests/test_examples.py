@@ -82,3 +82,11 @@ def test_evaluation_callback_example_records_point_freshness() -> None:
 
     torch.testing.assert_close(result.cost, torch.tensor(0.0, dtype=torch.float64))
     assert callback.calls == [(False, False), (True, True)]
+
+
+def test_bicubic_interpolation_example_recovers_shift() -> None:
+    module = load_example("bicubic_interpolation")
+    summary, estimated_shift, true_shift = module.run()
+
+    assert summary.IsSolutionUsable()
+    torch.testing.assert_close(estimated_shift, true_shift, atol=1e-8, rtol=1e-8)
