@@ -142,6 +142,25 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
             continue
 
         snapshot = problem.snapshot()
+        if _has_bounds(active_blocks) and options.max_num_line_search_step_size_iterations > 0:
+            line_search_start = time.perf_counter()
+            step, line_search_iterations, line_search_evaluations = _projected_line_search_step(
+                problem,
+                active_blocks,
+                snapshot,
+                step,
+                cost,
+                g,
+                options,
+            )
+            line_search_time = time.perf_counter() - line_search_start
+            summary.num_residual_evaluations += line_search_evaluations
+            summary.num_line_search_steps += line_search_iterations
+            summary.num_line_search_function_evaluations += line_search_evaluations
+            summary.line_search_total_time_in_seconds += line_search_time
+            iter_summary.line_search_iterations = line_search_iterations
+            iter_summary.line_search_function_evaluations = line_search_evaluations
+            problem.restore(snapshot)
         problem.apply_delta(step, active_blocks=active_blocks)
         candidate = problem.evaluate(compute_jacobian=False)
         summary.num_residual_evaluations += 1
@@ -360,6 +379,9 @@ def _line_search_solve(options: SolverOptions, problem: Problem) -> SolverSummar
                     iter_summary.step_norm = float(torch.linalg.norm(step_size * trial_direction).detach().cpu())
                     iter_summary.cost_change = cost - candidate_cost
                     iter_summary.step_is_successful = True
+                    summary.num_line_search_steps += iter_summary.line_search_iterations
+                    summary.num_line_search_function_evaluations += trial_evaluations
+                    summary.num_line_search_gradient_evaluations += trial_evaluations
                     summary.num_successful_steps += 1
                     break
                 next_step_size = next_line_search_step_size(
@@ -381,6 +403,9 @@ def _line_search_solve(options: SolverOptions, problem: Problem) -> SolverSummar
         if not accepted:
             problem.restore(snapshot)
             summary.num_unsuccessful_steps += 1
+            summary.num_line_search_steps += trial_evaluations
+            summary.num_line_search_function_evaluations += trial_evaluations
+            summary.num_line_search_gradient_evaluations += trial_evaluations
             summary.termination_type = TerminationType.NO_CONVERGENCE
             summary.message = "Line search failed to find a decreasing step."
             break
@@ -499,6 +524,59 @@ def _model_decrease(J: torch.Tensor, r: torch.Tensor, step: torch.Tensor) -> flo
     after_r = r + J @ step
     after = 0.5 * torch.dot(after_r, after_r)
     return float(torch.clamp(before - after, min=0.0).detach().cpu())
+
+
+def _has_bounds(blocks: list[ParameterBlock]) -> bool:
+    return any(block.lower_bound is not None or block.upper_bound is not None for block in blocks)
+
+
+def _projected_line_search_step(
+    problem: Problem,
+    active_blocks: list[ParameterBlock],
+    snapshot: list[torch.Tensor],
+    step: torch.Tensor,
+    cost: float,
+    gradient: torch.Tensor,
+    options: SolverOptions,
+) -> tuple[torch.Tensor, int, int]:
+    directional_derivative = float(torch.dot(gradient, step).detach().cpu())
+    if directional_derivative >= 0.0:
+        return step, 0, 0
+
+    step_size = 1.0
+    previous_step_size: float | None = None
+    previous_candidate_cost: float | None = None
+    evaluations = 0
+    iterations = 0
+    for _ in range(options.max_num_line_search_step_size_iterations):
+        iterations += 1
+        problem.restore(snapshot)
+        problem.apply_delta(step_size * step, active_blocks=active_blocks)
+        candidate = problem.evaluate(EvaluateOptions(parameter_blocks=active_blocks), compute_jacobian=False)
+        evaluations += 1
+        candidate_cost = float(candidate.cost.detach().cpu())
+        sufficient_decrease = cost + options.line_search_sufficient_function_decrease * step_size * directional_derivative
+        if candidate_cost <= sufficient_decrease:
+            problem.restore(snapshot)
+            return step_size * step, iterations, evaluations
+
+        next_step_size = next_line_search_step_size(
+            options,
+            step_size=step_size,
+            cost=cost,
+            candidate_cost=candidate_cost,
+            directional_derivative=directional_derivative,
+            previous_step_size=previous_step_size,
+            previous_candidate_cost=previous_candidate_cost,
+        )
+        previous_step_size = step_size
+        previous_candidate_cost = candidate_cost
+        step_size = next_step_size
+        if step_size < options.min_line_search_step_size:
+            break
+
+    problem.restore(snapshot)
+    return step, iterations, evaluations
 
 
 def _run_inner_iterations(

@@ -35,6 +35,40 @@ def test_bounds_are_enforced() -> None:
     torch.testing.assert_close(x, torch.tensor([1.0], dtype=torch.float64), atol=1e-6, rtol=1e-6)
 
 
+def test_trust_region_projected_line_search_rescales_bound_constrained_step() -> None:
+    x = torch.tensor([0.32], dtype=torch.float64)
+    problem = tc.Problem()
+    problem.AddParameterBlock(x)
+    problem.SetParameterUpperBound(x, 0, 1.57)
+    problem.AddResidualBlock(
+        tc.AutoDiffCostFunction(lambda x: torch.sin(5.0 * x[0]).reshape(1), [1], 1),
+        None,
+        [x],
+    )
+
+    summary = tc.solve(
+        tc.SolverOptions(
+            max_num_iterations=1,
+            initial_trust_region_radius=1e4,
+            gradient_tolerance=0.0,
+            function_tolerance=0.0,
+            parameter_tolerance=0.0,
+            min_relative_decrease=1e-3,
+        ),
+        problem,
+    )
+
+    step_iteration = summary.iterations[1]
+    assert summary.num_successful_steps == 1
+    assert summary.num_unsuccessful_steps == 0
+    assert summary.num_line_search_steps == step_iteration.line_search_iterations
+    assert summary.num_line_search_function_evaluations == step_iteration.line_search_function_evaluations
+    assert step_iteration.line_search_iterations > 1
+    assert x.item() < 1.57
+    assert summary.final_cost < summary.initial_cost
+    assert "Line search steps" in summary.FullReport()
+
+
 def test_gradient_problem_rosenbrock() -> None:
     x = torch.tensor([-1.2, 1.0], dtype=torch.float64)
 
