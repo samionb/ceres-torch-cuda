@@ -43,6 +43,8 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
     initial = problem.evaluate(EvaluateOptions(parameter_blocks=active_blocks), compute_jacobian=True)
     summary.initial_cost = float(initial.cost.detach().cpu())
     summary.final_cost = summary.initial_cost
+    best_cost = summary.initial_cost
+    best_snapshot = problem.snapshot()
     cost_window.append(summary.initial_cost)
     if initial.gradient is None:
         summary.termination_type = TerminationType.CONVERGENCE
@@ -161,7 +163,6 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
         if accepted:
             consecutive_invalid = 0
             summary.num_successful_steps += 1
-            summary.final_cost = candidate_cost
             candidate_cost, inner_steps = _run_inner_iterations(
                 problem,
                 active_blocks,
@@ -170,9 +171,14 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
             )
             if inner_steps:
                 summary.num_residual_evaluations += inner_steps
-                summary.final_cost = candidate_cost
                 iter_summary.cost_change = cost - candidate_cost
-            iter_summary.step_is_nonmonotonic = candidate_cost > cost
+            if candidate_cost < best_cost:
+                best_cost = candidate_cost
+                best_snapshot = problem.snapshot()
+                iter_summary.step_is_nonmonotonic = False
+            else:
+                iter_summary.step_is_nonmonotonic = candidate_cost > best_cost
+            summary.final_cost = best_cost
             radius = _updated_trust_region_radius(
                 radius,
                 rho,
@@ -194,18 +200,28 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
 
         summary.iterations.append(iter_summary)
         _maybe_log_progress(options, iter_summary)
+        callback_snapshot: list[torch.Tensor] | None = None
+        if options.update_state_every_iteration:
+            callback_snapshot = problem.snapshot()
+            problem.restore(best_snapshot)
         for callback in options.callbacks:
             result = callback(iter_summary)
             if result is CallbackReturnType.SOLVER_ABORT:
                 summary.termination_type = TerminationType.USER_FAILURE
                 summary.message = "User callback aborted."
+                problem.restore(best_snapshot)
+                summary.final_cost = best_cost
                 summary.total_time_in_seconds = time.perf_counter() - start
                 return summary
             if result is CallbackReturnType.SOLVER_TERMINATE_SUCCESSFULLY:
                 summary.termination_type = TerminationType.USER_SUCCESS
                 summary.message = "User callback terminated successfully."
+                problem.restore(best_snapshot)
+                summary.final_cost = best_cost
                 summary.total_time_in_seconds = time.perf_counter() - start
                 return summary
+        if callback_snapshot is not None:
+            problem.restore(callback_snapshot)
 
         if accepted:
             if _parameter_converged(step, problem, options):
@@ -243,6 +259,8 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
     elif not summary.message or summary.message == "torch_ceres.solve was not called.":
         summary.termination_type = TerminationType.NO_CONVERGENCE
         summary.message = "Maximum iterations reached."
+    problem.restore(best_snapshot)
+    summary.final_cost = best_cost
     summary.total_time_in_seconds = time.perf_counter() - start
     return summary
 

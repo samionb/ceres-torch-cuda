@@ -292,6 +292,50 @@ def test_inner_iterations_improve_blockwise_nonlinear_problem() -> None:
     assert inner_summary.num_residual_evaluations > plain_summary.num_residual_evaluations
 
 
+def test_nonmonotonic_trust_region_restores_best_state_for_callbacks_and_final_state() -> None:
+    x = torch.tensor([-7.5], dtype=torch.float64)
+    problem = tc.Problem()
+    problem.AddParameterBlock(x)
+    problem.AddResidualBlock(
+        tc.AutoDiffCostFunction(lambda x: (torch.sin(3.0 * x[0]) + 0.1 * x[0]).reshape(1), [1], 1),
+        None,
+        [x],
+    )
+    callback_costs: list[float] = []
+
+    def callback(iteration: tc.IterationSummary) -> tc.CallbackReturnType:
+        if iteration.step_is_nonmonotonic:
+            callback_costs.append(float(problem.evaluate(compute_jacobian=False).cost.detach().cpu()))
+        return tc.CallbackReturnType.SOLVER_CONTINUE
+
+    summary = tc.solve(
+        tc.SolverOptions(
+            max_num_iterations=11,
+            use_nonmonotonic_steps=True,
+            max_consecutive_nonmonotonic_steps=5,
+            update_state_every_iteration=True,
+            callbacks=[callback],
+            initial_trust_region_radius=1.0,
+            gradient_tolerance=0.0,
+            function_tolerance=0.0,
+            parameter_tolerance=0.0,
+            min_relative_decrease=1e-6,
+        ),
+        problem,
+    )
+
+    nonmonotonic_steps = [iteration for iteration in summary.iterations if iteration.step_is_nonmonotonic]
+    assert nonmonotonic_steps
+    uphill_step = nonmonotonic_steps[-1]
+    uphill_candidate_cost = uphill_step.cost - uphill_step.cost_change
+    final_evaluated_cost = float(problem.evaluate(compute_jacobian=False).cost.detach().cpu())
+
+    assert callback_costs
+    assert summary.final_cost < uphill_candidate_cost
+    assert callback_costs[-1] < uphill_candidate_cost
+    torch.testing.assert_close(torch.tensor(final_evaluated_cost), torch.tensor(summary.final_cost))
+
+
 def test_minimizer_progress_to_stdout_logs_iteration(capsys: pytest.CaptureFixture[str]) -> None:
     x = torch.tensor([0.5], dtype=torch.float64)
     problem = tc.Problem()
