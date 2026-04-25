@@ -150,6 +150,11 @@ class IterationSummary:
     line_search_gradient_evaluations: int = 0
     line_search_iterations: int = 0
     linear_solver_iterations: int = 0
+    residual_evaluation_time_in_seconds: float = 0.0
+    jacobian_evaluation_time_in_seconds: float = 0.0
+    linear_solver_time_in_seconds: float = 0.0
+    line_search_time_in_seconds: float = 0.0
+    inner_iteration_time_in_seconds: float = 0.0
     iteration_time_in_seconds: float = 0.0
     step_solver_time_in_seconds: float = 0.0
     cumulative_time_in_seconds: float = 0.0
@@ -263,6 +268,13 @@ class SolverSummary:
     num_line_search_function_evaluations: int = 0
     num_line_search_gradient_evaluations: int = 0
     line_search_total_time_in_seconds: float = 0.0
+    preprocessor_time_in_seconds: float = 0.0
+    minimizer_time_in_seconds: float = 0.0
+    postprocessor_time_in_seconds: float = 0.0
+    residual_evaluation_time_in_seconds: float = 0.0
+    jacobian_evaluation_time_in_seconds: float = 0.0
+    linear_solver_time_in_seconds: float = 0.0
+    inner_iteration_time_in_seconds: float = 0.0
     total_time_in_seconds: float = 0.0
     num_parameter_blocks: int = 0
     num_parameters: int = 0
@@ -311,7 +323,14 @@ class SolverSummary:
                 f"Line search steps: {self.num_line_search_steps}",
                 f"Line search function evaluations: {self.num_line_search_function_evaluations}",
                 f"Line search gradient evaluations: {self.num_line_search_gradient_evaluations}",
+                f"Residual evaluation time (s): {self.residual_evaluation_time_in_seconds:.6f}",
+                f"Jacobian evaluation time (s): {self.jacobian_evaluation_time_in_seconds:.6f}",
+                f"Linear solver time (s): {self.linear_solver_time_in_seconds:.6f}",
                 f"Line search time (s): {self.line_search_total_time_in_seconds:.6f}",
+                f"Inner iteration time (s): {self.inner_iteration_time_in_seconds:.6f}",
+                f"Preprocessor time (s): {self.preprocessor_time_in_seconds:.6f}",
+                f"Minimizer time (s): {self.minimizer_time_in_seconds:.6f}",
+                f"Postprocessor time (s): {self.postprocessor_time_in_seconds:.6f}",
                 f"Total time (s): {self.total_time_in_seconds:.6f}",
                 f"Termination: {self.termination_type.value} ({self.message})",
             ]

@@ -17,8 +17,8 @@ areas. Status values:
 | Manifolds | `manifold.h`, sphere/line/product/autodiff | `ceres_torch.manifolds` | partial | Identity/Jacobian properties, analytic sphere/line Jacobians, Ceres-style aliases, right-multiply helper, quaternion layout parity |
 | Rotation helpers | `rotation.h` | `ceres_torch.rotation` | partial | Angle-axis, quaternion, scaled quaternion matrices, legacy Euler helpers, aliases, cross/dot products, and point rotation |
 | Interpolation | `cubic_interpolation.h` | `ceres_torch.interpolation` | partial | Catmull-Rom/Ceres Hermite kernel, cubic/bicubic scalar and vector sample values and derivatives, Ceres finite-grid clamping and flat storage layouts |
-| Trust region minimizer | `trust_region_minimizer.cc` | `ceres_torch.solver` | partial | LM/dogleg convergence, Ceres-style LM radius updates, projected constrained line search, nonmonotonic step evaluator with best-state restoration, inner iterations, progress counters |
-| Line search minimizer | `line_search_minimizer.cc` | `ceres_torch.gradient_solver`, `solver` | partial | Armijo/Wolfe, shared interpolation modes, steepest, NCG, BFGS/LBFGS coverage, counters in first/least-squares solvers |
+| Trust region minimizer | `trust_region_minimizer.cc` | `ceres_torch.solver` | partial | LM/dogleg convergence, Ceres-style LM radius updates, projected constrained line search, nonmonotonic step evaluator with best-state restoration, inner iterations, progress and detailed timing counters |
+| Line search minimizer | `line_search_minimizer.cc` | `ceres_torch.gradient_solver`, `solver` | partial | Armijo/Wolfe, shared interpolation modes, steepest, NCG, BFGS/LBFGS coverage, counters and timing reports in first/least-squares solvers |
 | Dense linear solvers | dense QR/Cholesky files | `ceres_torch.linear` | partial | QR/Cholesky residual norms match Ceres tolerances |
 | Sparse/Schur solvers | Schur, CGNR, sparse Cholesky files | `ceres_torch.linear`, `schur`, `sparse_backends`, `cuda_backends`, `native/cuda` | partial | Dense Schur with ordering, pure PyTorch iterative paths, SciPy/SuperLU sparse normal and Schur backend, SuiteSparseQR-style covariance hook, PyTorch CUDA sparse/block-Schur backend, opt-in native CUDA extension |
 | Preconditioners | Jacobi, Schur, cluster, subset files | `ceres_torch.linear` | partial | Identity/Jacobi, exact block-Jacobi Schur/cluster/subset aliases from parameter block structure, specialized cluster graph forms planned |
@@ -35,7 +35,8 @@ areas. Status values:
 
 1. Expand solver parity: inexact LM forcing sequences, richer constrained
    line-search edge cases, richer inner-iteration ordering beyond the current
-   Ceres-style acceptance ordering, and detailed timing counters.
+   Ceres-style acceptance ordering, and deeper timing breakdowns for less common
+   minimizer paths.
 2. Extend optional sparse backends beyond the SciPy/SuperLU CPU direct path and
    PyTorch CUDA sparse/block-Schur path with SuiteSparse-like sparse QR behavior
    and production cuDSS/cuSPARSE Cholesky kernels where PyTorch cannot expose the

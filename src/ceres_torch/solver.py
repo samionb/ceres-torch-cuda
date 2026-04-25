@@ -33,6 +33,7 @@ def solve(options: SolverOptions, problem: Problem) -> SolverSummary:
 
 def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSummary:
     start = time.perf_counter()
+    preprocessor_start = start
     summary = _new_summary(options, problem)
     active_blocks = _linear_solver_parameter_order(problem)
     num_eliminate = _num_eliminate_for_schur(active_blocks, _effective_linear_solver(options.linear_solver_type))
@@ -40,8 +41,15 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
     radius = lm_radius.radius
     consecutive_invalid = 0
     previous_cost: float | None = None
+    summary.preprocessor_time_in_seconds = time.perf_counter() - preprocessor_start
+    minimizer_start = time.perf_counter()
 
-    initial = problem.evaluate(EvaluateOptions(parameter_blocks=active_blocks), compute_jacobian=True)
+    initial, initial_eval_time = _timed_evaluate(
+        problem,
+        EvaluateOptions(parameter_blocks=active_blocks),
+        compute_jacobian=True,
+    )
+    summary.jacobian_evaluation_time_in_seconds += initial_eval_time
     summary.initial_cost = float(initial.cost.detach().cpu())
     summary.final_cost = summary.initial_cost
     best_cost = summary.initial_cost
@@ -53,11 +61,16 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
     if initial.gradient is None:
         summary.termination_type = TerminationType.CONVERGENCE
         summary.message = "No active parameters."
-        return summary
+        return _finalize_trust_region_summary(summary, start, minimizer_start, problem, best_snapshot, best_cost)
 
     for iteration in range(options.max_num_iterations + 1):
         iter_start = time.perf_counter()
-        evaluation = problem.evaluate(EvaluateOptions(parameter_blocks=active_blocks), compute_jacobian=True)
+        evaluation, jacobian_eval_time = _timed_evaluate(
+            problem,
+            EvaluateOptions(parameter_blocks=active_blocks),
+            compute_jacobian=True,
+        )
+        summary.jacobian_evaluation_time_in_seconds += jacobian_eval_time
         summary.num_jacobian_evaluations += 1
         cost = float(evaluation.cost.detach().cpu())
         J = evaluation.jacobian
@@ -76,9 +89,12 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
             gradient_max_norm=float(grad_max.detach().cpu()),
             trust_region_radius=radius,
             eta=options.eta,
+            jacobian_evaluation_time_in_seconds=jacobian_eval_time,
         )
 
         if iteration == 0:
+            iter_summary.iteration_time_in_seconds = time.perf_counter() - iter_start
+            iter_summary.cumulative_time_in_seconds = time.perf_counter() - start
             summary.iterations.append(iter_summary)
             _maybe_log_progress(options, iter_summary)
             if _gradient_converged(grad_max, options):
@@ -130,6 +146,7 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
             step = linear_result.x
             linear_iterations = linear_result.summary.num_iterations
             summary.num_linear_solves += 1
+        summary.linear_solver_time_in_seconds += linear_time
 
         if not torch.all(torch.isfinite(step)):
             consecutive_invalid += 1
@@ -140,6 +157,11 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
             )
             iter_summary.step_is_valid = False
             iter_summary.step_is_successful = False
+            iter_summary.linear_solver_iterations = linear_iterations
+            iter_summary.linear_solver_time_in_seconds = linear_time
+            iter_summary.step_solver_time_in_seconds = linear_time
+            iter_summary.iteration_time_in_seconds = time.perf_counter() - iter_start
+            iter_summary.cumulative_time_in_seconds = time.perf_counter() - start
             summary.num_unsuccessful_steps += 1
             if consecutive_invalid > options.max_num_consecutive_invalid_steps:
                 summary.termination_type = TerminationType.FAILURE
@@ -152,7 +174,7 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
         snapshot = problem.snapshot()
         if _has_bounds(active_blocks) and options.max_num_line_search_step_size_iterations > 0:
             line_search_start = time.perf_counter()
-            step, line_search_iterations, line_search_evaluations = _projected_line_search_step(
+            step, line_search_iterations, line_search_evaluations, line_search_residual_time = _projected_line_search_step(
                 problem,
                 active_blocks,
                 snapshot,
@@ -166,26 +188,40 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
             summary.num_line_search_steps += line_search_iterations
             summary.num_line_search_function_evaluations += line_search_evaluations
             summary.line_search_total_time_in_seconds += line_search_time
+            summary.residual_evaluation_time_in_seconds += line_search_residual_time
             iter_summary.line_search_iterations = line_search_iterations
             iter_summary.line_search_function_evaluations = line_search_evaluations
+            iter_summary.line_search_time_in_seconds = line_search_time
+            iter_summary.residual_evaluation_time_in_seconds += line_search_residual_time
             problem.restore(snapshot)
         problem.apply_delta(step, active_blocks=active_blocks)
-        candidate = problem.evaluate(compute_jacobian=False)
+        candidate, residual_eval_time = _timed_evaluate(problem, compute_jacobian=False)
+        summary.residual_evaluation_time_in_seconds += residual_eval_time
         summary.num_residual_evaluations += 1
         candidate_cost = float(candidate.cost.detach().cpu())
         model_decrease = _model_decrease(J, r, step)
         step_is_valid = model_decrease > 0.0
         inner_iterations_were_useful = False
         if step_is_valid and options.use_inner_iterations:
+            inner_start = time.perf_counter()
             trust_region_candidate_cost = candidate_cost
-            candidate_cost, inner_steps = _run_inner_iterations(
+            candidate_cost, inner_steps, inner_jacobian_evals, inner_residual_time, inner_jacobian_time = _run_inner_iterations(
                 problem,
                 active_blocks,
                 options,
                 current_cost=candidate_cost,
             )
+            inner_time = time.perf_counter() - inner_start
             if inner_steps:
                 summary.num_residual_evaluations += inner_steps
+            if inner_jacobian_evals:
+                summary.num_jacobian_evaluations += inner_jacobian_evals
+            summary.residual_evaluation_time_in_seconds += inner_residual_time
+            summary.jacobian_evaluation_time_in_seconds += inner_jacobian_time
+            summary.inner_iteration_time_in_seconds += inner_time
+            iter_summary.residual_evaluation_time_in_seconds += inner_residual_time
+            iter_summary.jacobian_evaluation_time_in_seconds += inner_jacobian_time
+            iter_summary.inner_iteration_time_in_seconds = inner_time
             inner_model_decrease = trust_region_candidate_cost - candidate_cost
             model_decrease += inner_model_decrease
             inner_iterations_were_useful = candidate_cost < min(cost, trust_region_candidate_cost)
@@ -197,7 +233,9 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
         iter_summary.relative_decrease = float(rho)
         iter_summary.step_is_valid = step_is_valid
         iter_summary.linear_solver_iterations = linear_iterations
+        iter_summary.linear_solver_time_in_seconds = linear_time
         iter_summary.step_solver_time_in_seconds = linear_time
+        iter_summary.residual_evaluation_time_in_seconds += residual_eval_time
         iter_summary.iteration_time_in_seconds = time.perf_counter() - iter_start
         iter_summary.cumulative_time_in_seconds = time.perf_counter() - start
 
@@ -245,17 +283,11 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
             if result is CallbackReturnType.SOLVER_ABORT:
                 summary.termination_type = TerminationType.USER_FAILURE
                 summary.message = "User callback aborted."
-                problem.restore(best_snapshot)
-                summary.final_cost = best_cost
-                summary.total_time_in_seconds = time.perf_counter() - start
-                return summary
+                return _finalize_trust_region_summary(summary, start, minimizer_start, problem, best_snapshot, best_cost)
             if result is CallbackReturnType.SOLVER_TERMINATE_SUCCESSFULLY:
                 summary.termination_type = TerminationType.USER_SUCCESS
                 summary.message = "User callback terminated successfully."
-                problem.restore(best_snapshot)
-                summary.final_cost = best_cost
-                summary.total_time_in_seconds = time.perf_counter() - start
-                return summary
+                return _finalize_trust_region_summary(summary, start, minimizer_start, problem, best_snapshot, best_cost)
         if callback_snapshot is not None:
             problem.restore(callback_snapshot)
 
@@ -269,7 +301,13 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
                 summary.message = "Function tolerance reached."
                 break
             previous_cost = candidate_cost
-            next_eval = problem.evaluate(EvaluateOptions(parameter_blocks=active_blocks), compute_jacobian=True)
+            next_eval, next_jacobian_time = _timed_evaluate(
+                problem,
+                EvaluateOptions(parameter_blocks=active_blocks),
+                compute_jacobian=True,
+            )
+            summary.jacobian_evaluation_time_in_seconds += next_jacobian_time
+            summary.num_jacobian_evaluations += 1
             if next_eval.gradient is not None and _gradient_converged(torch.max(torch.abs(next_eval.gradient)), options):
                 summary.termination_type = TerminationType.CONVERGENCE
                 summary.message = "Gradient tolerance reached."
@@ -295,17 +333,22 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
     elif not summary.message or summary.message == "torch_ceres.solve was not called.":
         summary.termination_type = TerminationType.NO_CONVERGENCE
         summary.message = "Maximum iterations reached."
-    problem.restore(best_snapshot)
-    summary.final_cost = best_cost
-    summary.total_time_in_seconds = time.perf_counter() - start
-    return summary
+    return _finalize_trust_region_summary(summary, start, minimizer_start, problem, best_snapshot, best_cost)
 
 
 def _line_search_solve(options: SolverOptions, problem: Problem) -> SolverSummary:
     start = time.perf_counter()
+    preprocessor_start = start
     summary = _new_summary(options, problem)
     active_blocks = _linear_solver_parameter_order(problem)
-    initial = problem.evaluate(EvaluateOptions(parameter_blocks=active_blocks), compute_jacobian=True)
+    summary.preprocessor_time_in_seconds = time.perf_counter() - preprocessor_start
+    minimizer_start = time.perf_counter()
+    initial, initial_eval_time = _timed_evaluate(
+        problem,
+        EvaluateOptions(parameter_blocks=active_blocks),
+        compute_jacobian=True,
+    )
+    summary.jacobian_evaluation_time_in_seconds += initial_eval_time
     summary.initial_cost = float(initial.cost.detach().cpu())
     summary.final_cost = summary.initial_cost
     previous_grad: torch.Tensor | None = None
@@ -315,7 +358,13 @@ def _line_search_solve(options: SolverOptions, problem: Problem) -> SolverSummar
     inverse_hessian: torch.Tensor | None = None
 
     for iteration in range(options.max_num_iterations + 1):
-        evaluation = problem.evaluate(EvaluateOptions(parameter_blocks=active_blocks), compute_jacobian=True)
+        iter_start = time.perf_counter()
+        evaluation, jacobian_eval_time = _timed_evaluate(
+            problem,
+            EvaluateOptions(parameter_blocks=active_blocks),
+            compute_jacobian=True,
+        )
+        summary.jacobian_evaluation_time_in_seconds += jacobian_eval_time
         summary.num_jacobian_evaluations += 1
         cost = float(evaluation.cost.detach().cpu())
         g = evaluation.gradient
@@ -326,6 +375,7 @@ def _line_search_solve(options: SolverOptions, problem: Problem) -> SolverSummar
             cost=cost,
             gradient_norm=float(torch.linalg.norm(g).detach().cpu()),
             gradient_max_norm=float(grad_max.detach().cpu()),
+            jacobian_evaluation_time_in_seconds=jacobian_eval_time,
         )
         summary.iterations.append(iter_summary)
         _maybe_log_progress(options, iter_summary)
@@ -333,10 +383,14 @@ def _line_search_solve(options: SolverOptions, problem: Problem) -> SolverSummar
             summary.termination_type = TerminationType.CONVERGENCE
             summary.message = "Gradient tolerance reached."
             summary.final_cost = cost
+            iter_summary.iteration_time_in_seconds = time.perf_counter() - iter_start
+            iter_summary.cumulative_time_in_seconds = time.perf_counter() - start
             break
         if iteration == options.max_num_iterations:
             summary.termination_type = TerminationType.NO_CONVERGENCE
             summary.message = "Maximum iterations reached."
+            iter_summary.iteration_time_in_seconds = time.perf_counter() - iter_start
+            iter_summary.cumulative_time_in_seconds = time.perf_counter() - start
             break
         if inverse_hessian is None or inverse_hessian.shape[0] != g.numel():
             inverse_hessian = torch.eye(g.numel(), dtype=g.dtype, device=g.device)
@@ -364,6 +418,7 @@ def _line_search_solve(options: SolverOptions, problem: Problem) -> SolverSummar
         trial_evaluations = 0
         if not torch.allclose(direction, -g):
             directions.append(-g)
+        line_search_start = time.perf_counter()
         for trial_direction in directions:
             step_size = 1.0
             trial_derivative = torch.dot(g, trial_direction)
@@ -372,7 +427,13 @@ def _line_search_solve(options: SolverOptions, problem: Problem) -> SolverSummar
             for ls_iter in range(options.max_num_line_search_step_size_iterations):
                 problem.restore(snapshot)
                 problem.apply_delta(step_size * trial_direction, active_blocks=active_blocks)
-                candidate = problem.evaluate(EvaluateOptions(parameter_blocks=active_blocks), compute_jacobian=True)
+                candidate, candidate_eval_time = _timed_evaluate(
+                    problem,
+                    EvaluateOptions(parameter_blocks=active_blocks),
+                    compute_jacobian=True,
+                )
+                summary.jacobian_evaluation_time_in_seconds += candidate_eval_time
+                iter_summary.jacobian_evaluation_time_in_seconds += candidate_eval_time
                 summary.num_jacobian_evaluations += 1
                 trial_evaluations += 1
                 candidate_cost = float(candidate.cost.detach().cpu())
@@ -393,12 +454,14 @@ def _line_search_solve(options: SolverOptions, problem: Problem) -> SolverSummar
                     iter_summary.line_search_iterations = ls_iter + 1
                     iter_summary.line_search_function_evaluations = trial_evaluations
                     iter_summary.line_search_gradient_evaluations = trial_evaluations
+                    iter_summary.line_search_time_in_seconds = time.perf_counter() - line_search_start
                     iter_summary.step_norm = float(torch.linalg.norm(step_size * trial_direction).detach().cpu())
                     iter_summary.cost_change = cost - candidate_cost
                     iter_summary.step_is_successful = True
                     summary.num_line_search_steps += iter_summary.line_search_iterations
                     summary.num_line_search_function_evaluations += trial_evaluations
                     summary.num_line_search_gradient_evaluations += trial_evaluations
+                    summary.line_search_total_time_in_seconds += iter_summary.line_search_time_in_seconds
                     summary.num_successful_steps += 1
                     break
                 next_step_size = next_line_search_step_size(
@@ -423,11 +486,22 @@ def _line_search_solve(options: SolverOptions, problem: Problem) -> SolverSummar
             summary.num_line_search_steps += trial_evaluations
             summary.num_line_search_function_evaluations += trial_evaluations
             summary.num_line_search_gradient_evaluations += trial_evaluations
+            failed_line_search_time = time.perf_counter() - line_search_start
+            summary.line_search_total_time_in_seconds += failed_line_search_time
+            iter_summary.line_search_time_in_seconds = failed_line_search_time
             summary.termination_type = TerminationType.NO_CONVERGENCE
             summary.message = "Line search failed to find a decreasing step."
+            iter_summary.iteration_time_in_seconds = time.perf_counter() - iter_start
+            iter_summary.cumulative_time_in_seconds = time.perf_counter() - start
             break
         if accepted_gradient is None:
-            accepted_evaluation = problem.evaluate(EvaluateOptions(parameter_blocks=active_blocks), compute_jacobian=True)
+            accepted_evaluation, accepted_eval_time = _timed_evaluate(
+                problem,
+                EvaluateOptions(parameter_blocks=active_blocks),
+                compute_jacobian=True,
+            )
+            summary.jacobian_evaluation_time_in_seconds += accepted_eval_time
+            iter_summary.jacobian_evaluation_time_in_seconds += accepted_eval_time
             summary.num_jacobian_evaluations += 1
             accepted_gradient = accepted_evaluation.gradient if accepted_evaluation.gradient is not None else g.new_zeros(g.shape)
             summary.final_cost = float(accepted_evaluation.cost.detach().cpu())
@@ -447,18 +521,18 @@ def _line_search_solve(options: SolverOptions, problem: Problem) -> SolverSummar
             inverse_hessian = torch.eye(g.numel(), dtype=g.dtype, device=g.device)
         previous_grad = g.detach()
         previous_direction = accepted_direction.detach()
+        iter_summary.iteration_time_in_seconds = time.perf_counter() - iter_start
+        iter_summary.cumulative_time_in_seconds = time.perf_counter() - start
         for callback in options.callbacks:
             result = callback(iter_summary)
             if result is CallbackReturnType.SOLVER_ABORT:
                 summary.termination_type = TerminationType.USER_FAILURE
                 summary.message = "User callback aborted."
-                summary.total_time_in_seconds = time.perf_counter() - start
-                return summary
+                return _finalize_line_search_summary(summary, start, minimizer_start)
             if result is CallbackReturnType.SOLVER_TERMINATE_SUCCESSFULLY:
                 summary.termination_type = TerminationType.USER_SUCCESS
                 summary.message = "User callback terminated successfully."
-                summary.total_time_in_seconds = time.perf_counter() - start
-                return summary
+                return _finalize_line_search_summary(summary, start, minimizer_start)
         accepted_grad_max = torch.max(torch.abs(accepted_gradient)) if accepted_gradient.numel() else accepted_gradient.new_tensor(0.0)
         if _gradient_converged(accepted_grad_max, options):
             summary.termination_type = TerminationType.CONVERGENCE
@@ -476,6 +550,46 @@ def _line_search_solve(options: SolverOptions, problem: Problem) -> SolverSummar
             summary.termination_type = TerminationType.NO_CONVERGENCE
             summary.message = "Maximum solver time reached."
             break
+    return _finalize_line_search_summary(summary, start, minimizer_start)
+
+
+def _timed_evaluate(
+    problem: Problem,
+    options: EvaluateOptions | None = None,
+    *,
+    compute_jacobian: bool,
+):
+    eval_start = time.perf_counter()
+    result = problem.evaluate(options, compute_jacobian=compute_jacobian)
+    return result, time.perf_counter() - eval_start
+
+
+def _finalize_trust_region_summary(
+    summary: SolverSummary,
+    start: float,
+    minimizer_start: float,
+    problem: Problem,
+    best_snapshot: list[torch.Tensor],
+    best_cost: float,
+) -> SolverSummary:
+    if summary.minimizer_time_in_seconds == 0.0:
+        summary.minimizer_time_in_seconds = time.perf_counter() - minimizer_start
+    postprocessor_start = time.perf_counter()
+    problem.restore(best_snapshot)
+    summary.final_cost = best_cost
+    summary.postprocessor_time_in_seconds += time.perf_counter() - postprocessor_start
+    summary.total_time_in_seconds = time.perf_counter() - start
+    return summary
+
+
+def _finalize_line_search_summary(
+    summary: SolverSummary,
+    start: float,
+    minimizer_start: float,
+) -> SolverSummary:
+    if summary.minimizer_time_in_seconds == 0.0:
+        summary.minimizer_time_in_seconds = time.perf_counter() - minimizer_start
+    summary.postprocessor_time_in_seconds += max(0.0, time.perf_counter() - start - summary.preprocessor_time_in_seconds - summary.minimizer_time_in_seconds)
     summary.total_time_in_seconds = time.perf_counter() - start
     return summary
 
@@ -636,27 +750,33 @@ def _projected_line_search_step(
     cost: float,
     gradient: torch.Tensor,
     options: SolverOptions,
-) -> tuple[torch.Tensor, int, int]:
+) -> tuple[torch.Tensor, int, int, float]:
     directional_derivative = float(torch.dot(gradient, step).detach().cpu())
     if directional_derivative >= 0.0:
-        return step, 0, 0
+        return step, 0, 0, 0.0
 
     step_size = 1.0
     previous_step_size: float | None = None
     previous_candidate_cost: float | None = None
     evaluations = 0
     iterations = 0
+    residual_time = 0.0
     for _ in range(options.max_num_line_search_step_size_iterations):
         iterations += 1
         problem.restore(snapshot)
         problem.apply_delta(step_size * step, active_blocks=active_blocks)
-        candidate = problem.evaluate(EvaluateOptions(parameter_blocks=active_blocks), compute_jacobian=False)
+        candidate, candidate_time = _timed_evaluate(
+            problem,
+            EvaluateOptions(parameter_blocks=active_blocks),
+            compute_jacobian=False,
+        )
+        residual_time += candidate_time
         evaluations += 1
         candidate_cost = float(candidate.cost.detach().cpu())
         sufficient_decrease = cost + options.line_search_sufficient_function_decrease * step_size * directional_derivative
         if candidate_cost <= sufficient_decrease:
             problem.restore(snapshot)
-            return step_size * step, iterations, evaluations
+            return step_size * step, iterations, evaluations, residual_time
 
         next_step_size = next_line_search_step_size(
             options,
@@ -674,7 +794,7 @@ def _projected_line_search_step(
             break
 
     problem.restore(snapshot)
-    return step, iterations, evaluations
+    return step, iterations, evaluations, residual_time
 
 
 def _run_inner_iterations(
@@ -683,17 +803,23 @@ def _run_inner_iterations(
     options: SolverOptions,
     *,
     current_cost: float,
-) -> tuple[float, int]:
+) -> tuple[float, int, int, float, float]:
     if not options.use_inner_iterations:
-        return current_cost, 0
-    evaluations = 0
+        return current_cost, 0, 0, 0.0, 0.0
+    residual_evaluations = 0
+    jacobian_evaluations = 0
+    residual_time = 0.0
+    jacobian_time = 0.0
     for block in active_blocks:
         if block.tangent_size == 0:
             continue
-        evaluation = problem.evaluate(
+        evaluation, evaluation_time = _timed_evaluate(
+            problem,
             EvaluateOptions(parameter_blocks=[block], new_evaluation_point=False),
             compute_jacobian=True,
         )
+        jacobian_time += evaluation_time
+        jacobian_evaluations += 1
         J = evaluation.jacobian
         if J is None or J.shape[1] == 0:
             continue
@@ -709,8 +835,13 @@ def _run_inner_iterations(
             continue
         snapshot = problem.snapshot()
         problem.apply_delta(step, active_blocks=[block])
-        candidate = problem.evaluate(EvaluateOptions(new_evaluation_point=False), compute_jacobian=False)
-        evaluations += 1
+        candidate, candidate_time = _timed_evaluate(
+            problem,
+            EvaluateOptions(new_evaluation_point=False),
+            compute_jacobian=False,
+        )
+        residual_time += candidate_time
+        residual_evaluations += 1
         candidate_cost = float(candidate.cost.detach().cpu())
         improvement = current_cost - candidate_cost
         required = options.inner_iteration_tolerance * max(abs(current_cost), 1e-12)
@@ -718,7 +849,7 @@ def _run_inner_iterations(
             current_cost = candidate_cost
         else:
             problem.restore(snapshot)
-    return current_cost, evaluations
+    return current_cost, residual_evaluations, jacobian_evaluations, residual_time, jacobian_time
 
 
 def _updated_trust_region_radius(

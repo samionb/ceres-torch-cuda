@@ -209,6 +209,9 @@ def test_solve_line_search_direction_modes_converge_on_rosenbrock(
 
     assert summary.IsSolutionUsable()
     assert summary.line_search_direction_type is direction_type
+    assert summary.line_search_total_time_in_seconds >= 0.0
+    assert summary.jacobian_evaluation_time_in_seconds > 0.0
+    assert all(iteration.cumulative_time_in_seconds >= 0.0 for iteration in summary.iterations)
     torch.testing.assert_close(x, torch.tensor([1.0, 1.0], dtype=torch.float64), atol=1e-4, rtol=1e-4)
 
 
@@ -295,6 +298,30 @@ def test_trust_region_radius_expands_after_high_quality_steps() -> None:
     assert len(summary.iterations) >= 3
     assert summary.iterations[2].trust_region_radius > summary.iterations[1].trust_region_radius
     assert summary.iterations[1].step_solver_time_in_seconds >= 0.0
+
+
+def test_solver_reports_detailed_timing_counters() -> None:
+    x = torch.tensor([0.5], dtype=torch.float64)
+    problem = tc.Problem()
+    problem.AddResidualBlock(tc.AutoDiffCostFunction(lambda x: 10.0 - x, [1], 1), None, [x])
+
+    summary = tc.solve(
+        tc.SolverOptions(max_num_iterations=3, gradient_tolerance=0.0, function_tolerance=0.0),
+        problem,
+    )
+
+    assert summary.total_time_in_seconds >= 0.0
+    assert summary.preprocessor_time_in_seconds >= 0.0
+    assert summary.minimizer_time_in_seconds >= 0.0
+    assert summary.postprocessor_time_in_seconds >= 0.0
+    assert summary.jacobian_evaluation_time_in_seconds > 0.0
+    assert summary.linear_solver_time_in_seconds > 0.0
+    assert any(iteration.jacobian_evaluation_time_in_seconds > 0.0 for iteration in summary.iterations)
+    assert any(iteration.linear_solver_time_in_seconds > 0.0 for iteration in summary.iterations)
+    report = summary.FullReport()
+    assert "Jacobian evaluation time" in report
+    assert "Linear solver time" in report
+    assert "Preprocessor time" in report
 
 
 def test_levenberg_marquardt_radius_update_matches_ceres_strategy() -> None:
