@@ -126,7 +126,7 @@ from .testing import (
     finite_difference_jacobian,
     test_devices,
 )
-from .tiny_solver import TinySolver, TinySolverOptions, TinySolverSummary
+from .tiny_solver import TinySolver, TinySolverOptions, TinySolverStatus, TinySolverSummary
 from .types import *
 
 __all__ = [name for name in globals() if not name.startswith("_")]

@@ -1,14 +1,68 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import torch
+
+
+@dataclass(frozen=True)
+class QuaternionOrder:
+    kW: int
+    kX: int
+    kY: int
+    kZ: int
+
+
+CeresQuaternionOrder = QuaternionOrder(0, 1, 2, 3)
+EigenQuaternionOrder = QuaternionOrder(3, 0, 1, 2)
 
 
 def _eps_like(x: torch.Tensor) -> torch.Tensor:
     return torch.as_tensor(torch.finfo(x.dtype).eps, dtype=x.dtype, device=x.device)
 
 
-def make_quaternion(w: torch.Tensor, x: torch.Tensor, y: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
-    return torch.stack([w, x, y, z], dim=-1)
+def _quaternion_order(order: QuaternionOrder | str | None) -> QuaternionOrder:
+    if order is None or order is CeresQuaternionOrder or order == "ceres":
+        return CeresQuaternionOrder
+    if order is EigenQuaternionOrder or order == "eigen":
+        return EigenQuaternionOrder
+    if isinstance(order, QuaternionOrder):
+        return order
+    raise ValueError("order must be CeresQuaternionOrder, EigenQuaternionOrder, 'ceres', or 'eigen'")
+
+
+def make_quaternion(
+    w: torch.Tensor,
+    x: torch.Tensor,
+    y: torch.Tensor,
+    z: torch.Tensor,
+    *,
+    order: QuaternionOrder | str | None = None,
+) -> torch.Tensor:
+    order = _quaternion_order(order)
+    values = [None, None, None, None]
+    values[order.kW] = w
+    values[order.kX] = x
+    values[order.kY] = y
+    values[order.kZ] = z
+    return torch.stack(values, dim=-1)  # type: ignore[arg-type]
+
+
+def convert_quaternion(
+    q: torch.Tensor,
+    *,
+    from_order: QuaternionOrder | str | None = None,
+    to_order: QuaternionOrder | str | None = None,
+) -> torch.Tensor:
+    from_order = _quaternion_order(from_order)
+    to_order = _quaternion_order(to_order)
+    components = (q[..., from_order.kW], q[..., from_order.kX], q[..., from_order.kY], q[..., from_order.kZ])
+    values = [None, None, None, None]
+    values[to_order.kW] = components[0]
+    values[to_order.kX] = components[1]
+    values[to_order.kY] = components[2]
+    values[to_order.kZ] = components[3]
+    return torch.stack(values, dim=-1)  # type: ignore[arg-type]
 
 
 def normalize_quaternion(q: torch.Tensor) -> torch.Tensor:
@@ -51,7 +105,8 @@ def angle_axis_to_quaternion(angle_axis: torch.Tensor) -> torch.Tensor:
     theta = torch.linalg.norm(angle_axis, dim=-1, keepdim=True)
     half = 0.5 * theta
     small = theta <= _eps_like(theta)
-    k = torch.where(small, 0.5 - theta * theta / 48.0, torch.sin(half) / theta)
+    safe_theta = torch.where(small, torch.ones_like(theta), theta)
+    k = torch.where(small, 0.5 - theta * theta / 48.0, torch.sin(half) / safe_theta)
     return normalize_quaternion(torch.cat([torch.cos(half), k * angle_axis], dim=-1))
 
 
@@ -59,9 +114,11 @@ def quaternion_to_angle_axis(q: torch.Tensor) -> torch.Tensor:
     q = normalize_quaternion(q)
     sin_theta = torch.linalg.norm(q[..., 1:], dim=-1, keepdim=True)
     cos_theta = q[..., :1]
-    two_theta = 2.0 * torch.atan2(sin_theta, cos_theta)
     small = sin_theta <= _eps_like(sin_theta)
-    k = torch.where(small, 2.0 / cos_theta.clamp_min(torch.finfo(q.dtype).tiny), two_theta / sin_theta)
+    sign = torch.where(cos_theta < 0.0, -torch.ones_like(cos_theta), torch.ones_like(cos_theta))
+    two_theta = 2.0 * torch.atan2(sign * sin_theta, sign * cos_theta)
+    safe_sin = torch.where(small, torch.ones_like(sin_theta), sin_theta)
+    k = torch.where(small, 2.0 * torch.ones_like(sin_theta), two_theta / safe_sin)
     return k * q[..., 1:]
 
 
@@ -95,17 +152,56 @@ def angle_axis_to_rotation_matrix(angle_axis: torch.Tensor) -> torch.Tensor:
 def rotation_matrix_to_quaternion(matrix: torch.Tensor) -> torch.Tensor:
     m = matrix
     trace = m[..., 0, 0] + m[..., 1, 1] + m[..., 2, 2]
-    qw = 0.5 * torch.sqrt(torch.clamp(1.0 + trace, min=0.0))
-    qx = 0.5 * torch.sign(m[..., 2, 1] - m[..., 1, 2]) * torch.sqrt(
-        torch.clamp(1.0 + m[..., 0, 0] - m[..., 1, 1] - m[..., 2, 2], min=0.0)
+    eps = torch.finfo(m.dtype).eps
+    positive_trace = trace >= 0.0
+
+    t_trace = torch.sqrt(torch.clamp(trace + 1.0, min=eps))
+    q_trace = torch.stack(
+        [
+            0.5 * t_trace,
+            (m[..., 2, 1] - m[..., 1, 2]) * (0.5 / t_trace),
+            (m[..., 0, 2] - m[..., 2, 0]) * (0.5 / t_trace),
+            (m[..., 1, 0] - m[..., 0, 1]) * (0.5 / t_trace),
+        ],
+        dim=-1,
     )
-    qy = 0.5 * torch.sign(m[..., 0, 2] - m[..., 2, 0]) * torch.sqrt(
-        torch.clamp(1.0 - m[..., 0, 0] + m[..., 1, 1] - m[..., 2, 2], min=0.0)
+
+    diag = torch.stack([m[..., 0, 0], m[..., 1, 1], m[..., 2, 2]], dim=-1)
+    major = torch.argmax(diag, dim=-1)
+
+    tx = torch.sqrt(torch.clamp(1.0 + m[..., 0, 0] - m[..., 1, 1] - m[..., 2, 2], min=eps))
+    qx = torch.stack(
+        [
+            (m[..., 2, 1] - m[..., 1, 2]) * (0.5 / tx),
+            0.5 * tx,
+            (m[..., 0, 1] + m[..., 1, 0]) * (0.5 / tx),
+            (m[..., 0, 2] + m[..., 2, 0]) * (0.5 / tx),
+        ],
+        dim=-1,
     )
-    qz = 0.5 * torch.sign(m[..., 1, 0] - m[..., 0, 1]) * torch.sqrt(
-        torch.clamp(1.0 - m[..., 0, 0] - m[..., 1, 1] + m[..., 2, 2], min=0.0)
+    ty = torch.sqrt(torch.clamp(1.0 - m[..., 0, 0] + m[..., 1, 1] - m[..., 2, 2], min=eps))
+    qy = torch.stack(
+        [
+            (m[..., 0, 2] - m[..., 2, 0]) * (0.5 / ty),
+            (m[..., 0, 1] + m[..., 1, 0]) * (0.5 / ty),
+            0.5 * ty,
+            (m[..., 1, 2] + m[..., 2, 1]) * (0.5 / ty),
+        ],
+        dim=-1,
     )
-    return normalize_quaternion(torch.stack([qw, qx, qy, qz], dim=-1))
+    tz = torch.sqrt(torch.clamp(1.0 - m[..., 0, 0] - m[..., 1, 1] + m[..., 2, 2], min=eps))
+    qz = torch.stack(
+        [
+            (m[..., 1, 0] - m[..., 0, 1]) * (0.5 / tz),
+            (m[..., 0, 2] + m[..., 2, 0]) * (0.5 / tz),
+            (m[..., 1, 2] + m[..., 2, 1]) * (0.5 / tz),
+            0.5 * tz,
+        ],
+        dim=-1,
+    )
+
+    q_negative = torch.where((major == 0).unsqueeze(-1), qx, torch.where((major == 1).unsqueeze(-1), qy, qz))
+    return normalize_quaternion(torch.where(positive_trace.unsqueeze(-1), q_trace, q_negative))
 
 
 def rotation_matrix_to_angle_axis(matrix: torch.Tensor) -> torch.Tensor:
@@ -113,11 +209,9 @@ def rotation_matrix_to_angle_axis(matrix: torch.Tensor) -> torch.Tensor:
 
 
 def unit_quaternion_rotate_point(q: torch.Tensor, point: torch.Tensor) -> torch.Tensor:
-    q = normalize_quaternion(q)
-    zeros = torch.zeros_like(point[..., :1])
-    p = torch.cat([zeros, point], dim=-1)
-    rotated = quaternion_product(quaternion_product(q, p), quaternion_conjugate(q))
-    return rotated[..., 1:]
+    u = q[..., 1:]
+    uv = 2.0 * cross_product(u, point)
+    return point + q[..., :1] * uv + cross_product(u, uv)
 
 
 def quaternion_rotate_point(q: torch.Tensor, point: torch.Tensor) -> torch.Tensor:
@@ -206,11 +300,11 @@ def _axis_rotation_matrix(angle: torch.Tensor, axis: str) -> torch.Tensor:
 
 
 def convert_ceres_to_eigen_quaternion(q: torch.Tensor) -> torch.Tensor:
-    return torch.cat([q[..., 1:], q[..., :1]], dim=-1)
+    return convert_quaternion(q, from_order=CeresQuaternionOrder, to_order=EigenQuaternionOrder)
 
 
 def convert_eigen_to_ceres_quaternion(q: torch.Tensor) -> torch.Tensor:
-    return torch.cat([q[..., 3:], q[..., :3]], dim=-1)
+    return convert_quaternion(q, from_order=EigenQuaternionOrder, to_order=CeresQuaternionOrder)
 
 
 AngleAxisToQuaternion = angle_axis_to_quaternion
@@ -230,3 +324,7 @@ QuaternionConjugate = quaternion_conjugate
 CrossProduct = cross_product
 DotProduct = dot_product
 AngleAxisRotatePoint = angle_axis_rotate_point
+MakeQuaternion = make_quaternion
+ConvertQuaternion = convert_quaternion
+ConvertCeresToEigenQuaternion = convert_ceres_to_eigen_quaternion
+ConvertEigenToCeresQuaternion = convert_eigen_to_ceres_quaternion

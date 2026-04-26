@@ -4,6 +4,84 @@ import pytest
 import ceres_torch as tc
 
 
+@pytest.mark.parametrize(
+    "solver_type",
+    [tc.LinearSolverType.DENSE_QR, tc.LinearSolverType.DENSE_NORMAL_CHOLESKY],
+)
+def test_dense_linear_solvers_match_full_rank_least_squares(solver_type: tc.LinearSolverType) -> None:
+    A = torch.tensor(
+        [
+            [3.0, 0.0, 1.0],
+            [0.0, 4.0, -1.0],
+            [2.0, 0.0, 0.0],
+            [0.0, -1.0, 5.0],
+        ],
+        dtype=torch.float64,
+    )
+    expected = torch.tensor([1.0, -2.0, 0.5], dtype=torch.float64)
+    b = A @ expected
+
+    result = tc.solve_linear_system(A, b, solver_type=solver_type)
+
+    assert result.summary.success
+    assert result.summary.residual_norm < 1e-10
+    torch.testing.assert_close(result.x, expected, atol=1e-10, rtol=1e-10)
+
+
+def test_dense_qr_and_normal_cholesky_match_with_damping() -> None:
+    A = torch.tensor(
+        [
+            [2.0, 0.0],
+            [1.0, 3.0],
+            [0.5, -1.0],
+        ],
+        dtype=torch.float64,
+    )
+    b = torch.tensor([1.0, -2.0, 0.5], dtype=torch.float64)
+    damping = torch.tensor([0.2, 0.4], dtype=torch.float64)
+
+    qr = tc.solve_linear_system(A, b, solver_type=tc.LinearSolverType.DENSE_QR, damping=damping)
+    cholesky = tc.solve_linear_system(A, b, solver_type=tc.LinearSolverType.DENSE_NORMAL_CHOLESKY, damping=damping)
+
+    assert qr.summary.success
+    assert cholesky.summary.success
+    torch.testing.assert_close(cholesky.x, qr.x, atol=1e-10, rtol=1e-10)
+
+
+def test_dense_normal_cholesky_rank_deficient_fallback_matches_qr() -> None:
+    A = torch.tensor(
+        [
+            [1.0, 2.0],
+            [2.0, 4.0],
+            [3.0, 6.0],
+        ],
+        dtype=torch.float64,
+    )
+    b = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float64)
+
+    qr = tc.solve_linear_system(A, b, solver_type=tc.LinearSolverType.DENSE_QR)
+    cholesky = tc.solve_linear_system(A, b, solver_type=tc.LinearSolverType.DENSE_NORMAL_CHOLESKY)
+
+    assert cholesky.summary.success
+    assert "fallback" in cholesky.summary.message
+    torch.testing.assert_close(cholesky.x, qr.x, atol=1e-10, rtol=1e-10)
+
+
+def test_dense_linear_solver_validates_shapes_and_zero_column_systems() -> None:
+    A = torch.zeros((3, 0), dtype=torch.float64)
+    b = torch.tensor([1.0, -2.0, 2.0], dtype=torch.float64)
+    result = tc.solve_linear_system(A, b)
+
+    assert result.x.shape == torch.Size([0])
+    assert result.summary.message == "zero-column system"
+    assert result.summary.residual_norm == pytest.approx(3.0)
+
+    with pytest.raises(ValueError, match="2D"):
+        tc.solve_linear_system(torch.zeros(3, dtype=torch.float64), b)
+    with pytest.raises(ValueError, match="one entry per row"):
+        tc.solve_linear_system(torch.eye(2, dtype=torch.float64), b)
+
+
 def test_dense_schur_matches_damped_dense_qr_solution() -> None:
     A = torch.tensor(
         [

@@ -18,6 +18,12 @@ class Manifold:
     ambient_size: int
     tangent_size: int
 
+    def AmbientSize(self) -> int:
+        return self.ambient_size
+
+    def TangentSize(self) -> int:
+        return self.tangent_size
+
     def plus(self, x: torch.Tensor, delta: torch.Tensor) -> torch.Tensor:
         raise NotImplementedError
 

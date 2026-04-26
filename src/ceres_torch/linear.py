@@ -84,9 +84,20 @@ def solve_linear_system(
     use_mixed_precision: bool = False,
     max_refinement_iterations: int = 0,
 ) -> LinearSolverResult:
-    if A.numel() == 0:
-        x = b.new_zeros(b.shape)
-        return LinearSolverResult(x, LinearSolverSummary(0.0, 0, True, "empty system"))
+    if A.ndim != 2:
+        raise ValueError("A must be a 2D matrix")
+    b = b.reshape(-1)
+    if b.numel() != A.shape[0]:
+        raise ValueError("b must have one entry per row of A")
+    if A.shape[1] == 0:
+        x = b.new_zeros(0)
+        return LinearSolverResult(
+            x,
+            LinearSolverSummary(float(torch.linalg.norm(b).detach().cpu()), 0, True, "zero-column system"),
+        )
+    if A.shape[0] == 0:
+        x = b.new_zeros(A.shape[1])
+        return LinearSolverResult(x, LinearSolverSummary(0.0, 0, True, "empty-row system"))
 
     if solver_type is LinearSolverType.DENSE_SCHUR or (
         solver_type is LinearSolverType.ITERATIVE_SCHUR and num_eliminate > 0
