@@ -90,3 +90,18 @@ def test_bicubic_interpolation_example_recovers_shift() -> None:
 
     assert summary.IsSolutionUsable()
     torch.testing.assert_close(estimated_shift, true_shift, atol=1e-8, rtol=1e-8)
+
+
+def test_robot_pose_mle_example_reduces_range_errors() -> None:
+    module = load_example("robot_pose_mle")
+    summary, initial_odometry, final_odometry, _ranges, initial_errors, final_errors = module.run(
+        corridor_length=5.0,
+        max_num_iterations=25,
+    )
+
+    initial_rmse = torch.sqrt(torch.mean(initial_errors**2))
+    final_rmse = torch.sqrt(torch.mean(final_errors**2))
+
+    assert summary.IsSolutionUsable()
+    assert final_rmse < initial_rmse
+    assert abs(final_odometry.sum().item() - 5.0) < abs(initial_odometry.sum().item() - 5.0)

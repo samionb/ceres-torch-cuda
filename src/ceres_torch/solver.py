@@ -404,7 +404,9 @@ def _line_search_solve(options: SolverOptions, problem: Problem) -> SolverSummar
             inverse_hessian,
         )
         directional_derivative = torch.dot(g, direction)
+        direction_restarts = 0
         if directional_derivative >= 0:
+            direction_restarts += 1
             direction = -g
             directional_derivative = -torch.dot(g, g)
             s_history.clear()
@@ -419,7 +421,11 @@ def _line_search_solve(options: SolverOptions, problem: Problem) -> SolverSummar
         if not torch.allclose(direction, -g):
             directions.append(-g)
         line_search_start = time.perf_counter()
-        for trial_direction in directions:
+        for trial_index, trial_direction in enumerate(directions):
+            if trial_index > 0:
+                direction_restarts += 1
+                if direction_restarts > options.max_num_line_search_direction_restarts:
+                    break
             step_size = 1.0
             trial_derivative = torch.dot(g, trial_direction)
             previous_step_size: float | None = None
@@ -454,6 +460,7 @@ def _line_search_solve(options: SolverOptions, problem: Problem) -> SolverSummar
                     iter_summary.line_search_iterations = ls_iter + 1
                     iter_summary.line_search_function_evaluations = trial_evaluations
                     iter_summary.line_search_gradient_evaluations = trial_evaluations
+                    iter_summary.line_search_direction_restarts = direction_restarts
                     iter_summary.line_search_time_in_seconds = time.perf_counter() - line_search_start
                     iter_summary.step_norm = float(torch.linalg.norm(step_size * trial_direction).detach().cpu())
                     iter_summary.cost_change = cost - candidate_cost
@@ -461,6 +468,7 @@ def _line_search_solve(options: SolverOptions, problem: Problem) -> SolverSummar
                     summary.num_line_search_steps += iter_summary.line_search_iterations
                     summary.num_line_search_function_evaluations += trial_evaluations
                     summary.num_line_search_gradient_evaluations += trial_evaluations
+                    summary.num_line_search_direction_restarts += direction_restarts
                     summary.line_search_total_time_in_seconds += iter_summary.line_search_time_in_seconds
                     summary.num_successful_steps += 1
                     break
@@ -486,8 +494,10 @@ def _line_search_solve(options: SolverOptions, problem: Problem) -> SolverSummar
             summary.num_line_search_steps += trial_evaluations
             summary.num_line_search_function_evaluations += trial_evaluations
             summary.num_line_search_gradient_evaluations += trial_evaluations
+            summary.num_line_search_direction_restarts += direction_restarts
             failed_line_search_time = time.perf_counter() - line_search_start
             summary.line_search_total_time_in_seconds += failed_line_search_time
+            iter_summary.line_search_direction_restarts = direction_restarts
             iter_summary.line_search_time_in_seconds = failed_line_search_time
             summary.termination_type = TerminationType.NO_CONVERGENCE
             summary.message = "Line search failed to find a decreasing step."
@@ -605,8 +615,15 @@ def _new_summary(options: SolverOptions, problem: Problem) -> SolverSummary:
         linear_solver_type_given=options.linear_solver_type,
         linear_solver_type_used=_effective_linear_solver(options.linear_solver_type),
         trust_region_strategy_type=options.trust_region_strategy_type,
+        dogleg_type=options.dogleg_type,
         line_search_direction_type=options.line_search_direction_type,
         line_search_type=options.line_search_type,
+        line_search_interpolation_type=options.line_search_interpolation_type,
+        nonlinear_conjugate_gradient_type=options.nonlinear_conjugate_gradient_type,
+        preconditioner_type=options.preconditioner_type,
+        max_lbfgs_rank=options.max_lbfgs_rank,
+        dense_linear_algebra_library_type=options.dense_linear_algebra_library_type,
+        sparse_linear_algebra_library_type=options.sparse_linear_algebra_library_type,
     )
 
 
@@ -898,7 +915,12 @@ def _line_search_direction(
         beta = _nonlinear_conjugate_gradient_beta(options, grad, previous_grad, previous_direction)
         return -grad + torch.clamp(beta, min=0.0) * previous_direction
     if options.line_search_direction_type is LineSearchDirectionType.LBFGS and s_history:
-        return _lbfgs_two_loop(grad, s_history, y_history)
+        return _lbfgs_two_loop(
+            grad,
+            s_history,
+            y_history,
+            use_approximate_eigenvalue_scaling=options.use_approximate_eigenvalue_bfgs_scaling,
+        )
     if options.line_search_direction_type is LineSearchDirectionType.BFGS and inverse_hessian is not None:
         return -(inverse_hessian @ grad)
     return -grad
@@ -919,7 +941,13 @@ def _nonlinear_conjugate_gradient_beta(
     return torch.dot(grad, grad) / torch.dot(previous_grad, previous_grad).clamp_min(eps)
 
 
-def _lbfgs_two_loop(grad: torch.Tensor, s_history: list[torch.Tensor], y_history: list[torch.Tensor]) -> torch.Tensor:
+def _lbfgs_two_loop(
+    grad: torch.Tensor,
+    s_history: list[torch.Tensor],
+    y_history: list[torch.Tensor],
+    *,
+    use_approximate_eigenvalue_scaling: bool,
+) -> torch.Tensor:
     q = grad.clone()
     alphas: list[torch.Tensor] = []
     rhos: list[torch.Tensor] = []
@@ -932,7 +960,7 @@ def _lbfgs_two_loop(grad: torch.Tensor, s_history: list[torch.Tensor], y_history
         rhos.append(rho)
     s, y = s_history[-1], y_history[-1]
     gamma = torch.dot(s, y) / torch.dot(y, y).clamp_min(eps)
-    r = gamma * q
+    r = gamma * q if use_approximate_eigenvalue_scaling else q
     for s, y, alpha, rho in zip(s_history, y_history, reversed(alphas), reversed(rhos)):
         beta = rho * torch.dot(y, r)
         r = r + s * (alpha - beta)

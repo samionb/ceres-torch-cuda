@@ -67,6 +67,16 @@ class GradientProblemSolverOptions:
             (self.max_lbfgs_rank > 0, "max_lbfgs_rank must be > 0"),
             (self.min_line_search_step_size > 0, "min_line_search_step_size must be > 0"),
             (self.max_num_line_search_step_size_iterations > 0, "max_num_line_search_step_size_iterations must be > 0"),
+            (self.max_num_line_search_direction_restarts >= 0, "max_num_line_search_direction_restarts must be >= 0"),
+            (
+                0.0 < self.line_search_sufficient_function_decrease < 1.0,
+                "line_search_sufficient_function_decrease must be in (0, 1)",
+            ),
+            (
+                0.0 < self.line_search_sufficient_curvature_decrease < 1.0,
+                "line_search_sufficient_curvature_decrease must be in (0, 1)",
+            ),
+            (self.max_line_search_step_expansion > 1.0, "max_line_search_step_expansion must be > 1"),
             (
                 0.0 < self.min_line_search_step_contraction < 1.0,
                 "min_line_search_step_contraction must be in (0, 1)",
@@ -94,11 +104,24 @@ class GradientProblemSolverSummary:
     iterations: list[IterationSummary] = field(default_factory=list)
     num_cost_evaluations: int = 0
     num_gradient_evaluations: int = 0
+    num_successful_steps: int = 0
+    num_unsuccessful_steps: int = 0
+    num_line_search_steps: int = 0
+    num_line_search_function_evaluations: int = 0
+    num_line_search_gradient_evaluations: int = 0
+    num_line_search_direction_restarts: int = 0
     total_time_in_seconds: float = 0.0
+    cost_evaluation_time_in_seconds: float = 0.0
+    gradient_evaluation_time_in_seconds: float = 0.0
+    line_search_polynomial_minimization_time_in_seconds: float = 0.0
+    line_search_total_time_in_seconds: float = 0.0
     num_parameters: int = -1
     num_tangent_parameters: int = -1
     line_search_direction_type: LineSearchDirectionType = LineSearchDirectionType.LBFGS
     line_search_type: LineSearchType = LineSearchType.WOLFE
+    line_search_interpolation_type: LineSearchInterpolationType = LineSearchInterpolationType.CUBIC
+    nonlinear_conjugate_gradient_type: NonlinearConjugateGradientType = NonlinearConjugateGradientType.FLETCHER_REEVES
+    max_lbfgs_rank: int = -1
 
     def IsSolutionUsable(self) -> bool:
         return self.termination_type in {TerminationType.CONVERGENCE, TerminationType.NO_CONVERGENCE, TerminationType.USER_SUCCESS}
@@ -126,6 +149,16 @@ class GradientProblemSolverSummary:
                 f"Iterations: {len(self.iterations)}",
                 f"Cost evaluations: {self.num_cost_evaluations}",
                 f"Gradient evaluations: {self.num_gradient_evaluations}",
+                f"Successful steps: {self.num_successful_steps}",
+                f"Unsuccessful steps: {self.num_unsuccessful_steps}",
+                f"Line search steps: {self.num_line_search_steps}",
+                f"Line search function evaluations: {self.num_line_search_function_evaluations}",
+                f"Line search gradient evaluations: {self.num_line_search_gradient_evaluations}",
+                f"Line search direction restarts: {self.num_line_search_direction_restarts}",
+                f"Cost evaluation time (s): {self.cost_evaluation_time_in_seconds:.6f}",
+                f"Gradient evaluation time (s): {self.gradient_evaluation_time_in_seconds:.6f}",
+                f"Line search polynomial time (s): {self.line_search_polynomial_minimization_time_in_seconds:.6f}",
+                f"Line search time (s): {self.line_search_total_time_in_seconds:.6f}",
                 f"Total time (s): {self.total_time_in_seconds:.6f}",
                 f"Termination: {self.termination_type.value} ({self.message})",
             ]
@@ -140,15 +173,22 @@ def gradient_solve(
     options.validate()
     start = time.perf_counter()
     manifold = problem.manifold or EuclideanManifold(parameters.numel())
+    if manifold.ambient_size != parameters.numel():
+        raise ValueError("GradientProblem manifold ambient size must match parameters")
+    work = parameters.detach().clone()
     summary = GradientProblemSolverSummary(
         num_parameters=parameters.numel(),
         num_tangent_parameters=manifold.tangent_size,
         line_search_direction_type=options.line_search_direction_type,
         line_search_type=options.line_search_type,
+        line_search_interpolation_type=options.line_search_interpolation_type,
+        nonlinear_conjugate_gradient_type=options.nonlinear_conjugate_gradient_type,
+        max_lbfgs_rank=options.max_lbfgs_rank,
     )
-    value, ambient_grad = problem.function.value_and_gradient(parameters.detach())
+    value, _ambient_grad, evaluation_time = _timed_value_and_gradient(problem.function, work)
     summary.num_cost_evaluations += 1
     summary.num_gradient_evaluations += 1
+    summary.gradient_evaluation_time_in_seconds += evaluation_time
     summary.initial_cost = float(value.detach().cpu())
     summary.final_cost = summary.initial_cost
     previous_grad: Optional[torch.Tensor] = None
@@ -159,10 +199,11 @@ def gradient_solve(
 
     for iteration in range(options.max_num_iterations + 1):
         iter_start = time.perf_counter()
-        value, ambient_grad = problem.function.value_and_gradient(parameters.detach())
+        value, ambient_grad, evaluation_time = _timed_value_and_gradient(problem.function, work)
         summary.num_cost_evaluations += 1
         summary.num_gradient_evaluations += 1
-        plus_jac = manifold.plus_jacobian(parameters.detach().reshape(-1)).to(dtype=parameters.dtype, device=parameters.device)
+        summary.gradient_evaluation_time_in_seconds += evaluation_time
+        plus_jac = manifold.plus_jacobian(work.reshape(-1)).to(dtype=work.dtype, device=work.device)
         tangent_grad = plus_jac.T @ ambient_grad.reshape(-1)
         grad_norm = torch.linalg.norm(tangent_grad)
         grad_max = torch.max(torch.abs(tangent_grad)) if tangent_grad.numel() else tangent_grad.new_tensor(0.0)
@@ -172,6 +213,7 @@ def gradient_solve(
             cost=cost,
             gradient_norm=float(grad_norm.detach().cpu()),
             gradient_max_norm=float(grad_max.detach().cpu()),
+            jacobian_evaluation_time_in_seconds=evaluation_time,
         )
         summary.iterations.append(iter_summary)
         _maybe_log_progress(options, iter_summary)
@@ -179,10 +221,14 @@ def gradient_solve(
         if float(grad_max.detach().cpu()) <= options.gradient_tolerance:
             summary.termination_type = TerminationType.CONVERGENCE
             summary.message = "Gradient tolerance reached."
+            iter_summary.iteration_time_in_seconds = time.perf_counter() - iter_start
+            iter_summary.cumulative_time_in_seconds = time.perf_counter() - start
             break
         if iteration == options.max_num_iterations:
             summary.termination_type = TerminationType.NO_CONVERGENCE
             summary.message = "Maximum iterations reached."
+            iter_summary.iteration_time_in_seconds = time.perf_counter() - iter_start
+            iter_summary.cumulative_time_in_seconds = time.perf_counter() - start
             break
 
         if inverse_hessian is None or inverse_hessian.shape[0] != tangent_grad.numel():
@@ -198,9 +244,21 @@ def gradient_solve(
         )
         directional_derivative = torch.dot(tangent_grad, direction)
         if directional_derivative >= 0:
+            summary.num_line_search_direction_restarts += 1
+            if summary.num_line_search_direction_restarts > options.max_num_line_search_direction_restarts:
+                summary.termination_type = TerminationType.FAILURE
+                summary.message = "Line search direction restart limit reached."
+                iter_summary.step_is_successful = False
+                iter_summary.iteration_time_in_seconds = time.perf_counter() - iter_start
+                iter_summary.cumulative_time_in_seconds = time.perf_counter() - start
+                break
             direction = -tangent_grad
             directional_derivative = -torch.dot(tangent_grad, tangent_grad)
-        snapshot = parameters.detach().clone()
+            s_history.clear()
+            y_history.clear()
+            inverse_hessian = torch.eye(tangent_grad.numel(), dtype=tangent_grad.dtype, device=tangent_grad.device)
+        callback_snapshot = parameters.detach().clone()
+        work_snapshot = work.detach().clone()
         accepted = False
         accepted_value: torch.Tensor | None = None
         accepted_tangent_grad: torch.Tensor | None = None
@@ -208,20 +266,27 @@ def gradient_solve(
         trial_evaluations = 0
         if not torch.allclose(direction, -tangent_grad):
             directions.append(-tangent_grad)
-        for trial_direction in directions:
+        line_search_start = time.perf_counter()
+        for trial_index, trial_direction in enumerate(directions):
+            if trial_index > 0:
+                summary.num_line_search_direction_restarts += 1
+                if summary.num_line_search_direction_restarts > options.max_num_line_search_direction_restarts:
+                    break
             step_size = 1.0
             trial_derivative = torch.dot(tangent_grad, trial_direction)
             previous_step_size: float | None = None
             previous_candidate_cost: float | None = None
             for ls_iter in range(options.max_num_line_search_step_size_iterations):
-                candidate = manifold.plus(snapshot.reshape(-1), step_size * trial_direction).reshape_as(parameters)
-                cand_value, cand_ambient_grad = problem.function.value_and_gradient(candidate.detach())
+                candidate = manifold.plus(work_snapshot.reshape(-1), step_size * trial_direction).reshape_as(work)
+                cand_value, cand_ambient_grad, candidate_eval_time = _timed_value_and_gradient(problem.function, candidate.detach())
                 summary.num_cost_evaluations += 1
                 summary.num_gradient_evaluations += 1
+                summary.gradient_evaluation_time_in_seconds += candidate_eval_time
+                iter_summary.jacobian_evaluation_time_in_seconds += candidate_eval_time
                 trial_evaluations += 1
                 candidate_cost = float(cand_value.detach().cpu())
                 candidate_plus_jac = manifold.plus_jacobian(candidate.detach().reshape(-1)).to(
-                    dtype=parameters.dtype, device=parameters.device
+                    dtype=work.dtype, device=work.device
                 )
                 cand_tangent_grad = candidate_plus_jac.T @ cand_ambient_grad.reshape(-1)
                 armijo_ok = cand_value <= value + options.line_search_sufficient_function_decrease * step_size * trial_derivative
@@ -232,8 +297,10 @@ def gradient_solve(
                 else:
                     curvature_ok = True
                 if armijo_ok and curvature_ok:
-                    with torch.no_grad():
-                        parameters.reshape(-1).copy_(candidate.reshape(-1))
+                    work = candidate.detach().clone()
+                    if options.update_state_every_iteration:
+                        with torch.no_grad():
+                            parameters.reshape(-1).copy_(work.reshape(-1))
                     accepted = True
                     direction = trial_direction
                     accepted_value = cand_value.detach()
@@ -242,10 +309,17 @@ def gradient_solve(
                     iter_summary.line_search_iterations = ls_iter + 1
                     iter_summary.line_search_function_evaluations = trial_evaluations
                     iter_summary.line_search_gradient_evaluations = trial_evaluations
+                    iter_summary.line_search_time_in_seconds = time.perf_counter() - line_search_start
                     iter_summary.step_norm = float(torch.linalg.norm(step_size * trial_direction).detach().cpu())
                     iter_summary.cost_change = cost - candidate_cost
                     iter_summary.step_is_successful = True
+                    summary.num_line_search_steps += iter_summary.line_search_iterations
+                    summary.num_line_search_function_evaluations += trial_evaluations
+                    summary.num_line_search_gradient_evaluations += trial_evaluations
+                    summary.line_search_total_time_in_seconds += iter_summary.line_search_time_in_seconds
+                    summary.num_successful_steps += 1
                     break
+                interpolation_start = time.perf_counter()
                 next_step_size = next_line_search_step_size(
                     options,
                     step_size=step_size,
@@ -255,6 +329,7 @@ def gradient_solve(
                     previous_step_size=previous_step_size,
                     previous_candidate_cost=previous_candidate_cost,
                 )
+                summary.line_search_polynomial_minimization_time_in_seconds += time.perf_counter() - interpolation_start
                 previous_step_size = step_size
                 previous_candidate_cost = candidate_cost
                 step_size = next_step_size
@@ -263,6 +338,17 @@ def gradient_solve(
             if accepted:
                 break
         if not accepted:
+            work = work_snapshot
+            if options.update_state_every_iteration:
+                with torch.no_grad():
+                    parameters.reshape(-1).copy_(callback_snapshot.reshape(-1))
+            summary.num_unsuccessful_steps += 1
+            summary.num_line_search_steps += trial_evaluations
+            summary.num_line_search_function_evaluations += trial_evaluations
+            summary.num_line_search_gradient_evaluations += trial_evaluations
+            failed_line_search_time = time.perf_counter() - line_search_start
+            summary.line_search_total_time_in_seconds += failed_line_search_time
+            iter_summary.line_search_time_in_seconds = failed_line_search_time
             summary.termination_type = TerminationType.NO_CONVERGENCE
             summary.message = "Line search failed."
             iter_summary.iteration_time_in_seconds = time.perf_counter() - iter_start
@@ -300,14 +386,35 @@ def gradient_solve(
                 summary.termination_type = TerminationType.USER_FAILURE
                 summary.message = "User callback aborted."
                 summary.total_time_in_seconds = time.perf_counter() - start
+                if not options.update_state_every_iteration:
+                    with torch.no_grad():
+                        parameters.reshape(-1).copy_(callback_snapshot.reshape(-1))
                 return summary
             if result is CallbackReturnType.SOLVER_TERMINATE_SUCCESSFULLY:
                 summary.termination_type = TerminationType.USER_SUCCESS
                 summary.message = "User callback terminated successfully."
                 summary.total_time_in_seconds = time.perf_counter() - start
+                with torch.no_grad():
+                    parameters.reshape(-1).copy_(work.reshape(-1))
                 return summary
+        if time.perf_counter() - start >= options.max_solver_time_in_seconds:
+            summary.termination_type = TerminationType.NO_CONVERGENCE
+            summary.message = "Maximum solver time reached."
+            break
+    if summary.termination_type is not TerminationType.USER_FAILURE:
+        with torch.no_grad():
+            parameters.reshape(-1).copy_(work.reshape(-1))
     summary.total_time_in_seconds = time.perf_counter() - start
     return summary
+
+
+def _timed_value_and_gradient(
+    function: FirstOrderFunction,
+    parameters: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, float]:
+    start = time.perf_counter()
+    value, gradient = function.value_and_gradient(parameters)
+    return value, gradient, time.perf_counter() - start
 
 
 def _maybe_log_progress(options: GradientProblemSolverOptions, iteration: IterationSummary) -> None:
@@ -343,13 +450,24 @@ def _search_direction(
             beta = torch.dot(grad, grad) / torch.dot(previous_grad, previous_grad).clamp_min(torch.finfo(grad.dtype).eps)
         return -grad + torch.clamp(beta, min=0.0) * previous_direction
     if options.line_search_direction_type is LineSearchDirectionType.LBFGS and s_history:
-        return _lbfgs_two_loop(grad, s_history, y_history)
+        return _lbfgs_two_loop(
+            grad,
+            s_history,
+            y_history,
+            use_approximate_eigenvalue_scaling=options.use_approximate_eigenvalue_bfgs_scaling,
+        )
     if options.line_search_direction_type is LineSearchDirectionType.BFGS and inverse_hessian is not None:
         return -(inverse_hessian @ grad)
     return -grad
 
 
-def _lbfgs_two_loop(grad: torch.Tensor, s_history: list[torch.Tensor], y_history: list[torch.Tensor]) -> torch.Tensor:
+def _lbfgs_two_loop(
+    grad: torch.Tensor,
+    s_history: list[torch.Tensor],
+    y_history: list[torch.Tensor],
+    *,
+    use_approximate_eigenvalue_scaling: bool,
+) -> torch.Tensor:
     q = grad.clone()
     alphas: list[torch.Tensor] = []
     rhos: list[torch.Tensor] = []
@@ -359,7 +477,7 @@ def _lbfgs_two_loop(grad: torch.Tensor, s_history: list[torch.Tensor], y_history
         q = q - alpha * y
         alphas.append(alpha)
         rhos.append(rho)
-    if s_history:
+    if s_history and use_approximate_eigenvalue_scaling:
         s, y = s_history[-1], y_history[-1]
         gamma = torch.dot(s, y) / torch.dot(y, y).clamp_min(torch.finfo(grad.dtype).eps)
         r = gamma * q

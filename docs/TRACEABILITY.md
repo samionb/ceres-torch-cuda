@@ -11,19 +11,19 @@ areas. Status values:
 | Ceres area | Reference | ceres-torch area | Status | Acceptance target |
 | --- | --- | --- | --- | --- |
 | `Problem`, residual/parameter blocks | `include/ceres/problem.h` | `ceres_torch.problem` | implemented | Add/remove/evaluate residuals, bounds, constants, manifolds, public introspection |
-| `Solver::Options`, enums, summaries | `include/ceres/solver.h`, `types.h` | `ceres_torch.types`, `solver` | partial | Least-squares/gradient option validation and reports match Ceres semantics |
+| `Solver::Options`, enums, summaries | `include/ceres/solver.h`, `types.h` | `ceres_torch.types`, `solver` | implemented | Least-squares/gradient option validation, cross-option guards, reports, iteration counters, and timing fields match Ceres-style semantics |
 | Cost functions | `cost_function.h`, autodiff/numeric headers | `ceres_torch.costs` | implemented | Analytic/autograd/numeric Jacobians agree on test functions |
 | Robust losses | `loss_function.h`, `corrector.cc` | `ceres_torch.losses` | implemented | Values/derivatives match formulas and solver uses Ceres robust correction |
 | Manifolds | `manifold.h`, sphere/line/product/autodiff | `ceres_torch.manifolds` | implemented | Identity/Jacobian properties, analytic sphere/line Jacobians, Ceres-style aliases, right-multiply helper, quaternion and Eigen-quaternion layout parity, product and AutoDiff manifold coverage |
 | Rotation helpers | `rotation.h` | `ceres_torch.rotation` | implemented | Angle-axis, quaternion, scaled quaternion matrices, quaternion order conversion, legacy Euler helpers, aliases, cross/dot products, point rotation, robust pi-rotation matrix conversion, and small-angle autodiff safety |
 | Interpolation | `cubic_interpolation.h` | `ceres_torch.interpolation` | implemented | Catmull-Rom/Ceres Hermite kernel, cubic/bicubic scalar and vector sample values and derivatives, Ceres finite-grid clamping and flat storage layouts, autodiff-compatible chain-rule behavior |
 | Trust region minimizer | `trust_region_minimizer.cc` | `ceres_torch.solver` | partial | LM/dogleg convergence, Ceres-style LM radius updates, projected constrained line search, nonmonotonic step evaluator with best-state restoration, inner iterations, progress and detailed timing counters |
-| Line search minimizer | `line_search_minimizer.cc` | `ceres_torch.gradient_solver`, `solver` | partial | Armijo/Wolfe, shared interpolation modes, steepest, NCG, BFGS/LBFGS coverage, counters and timing reports in first/least-squares solvers |
+| Line search minimizer | `line_search_minimizer.cc` | `ceres_torch.gradient_solver`, `solver` | implemented | Armijo/Wolfe, shared interpolation modes, steepest, NCG, BFGS/LBFGS coverage, direction restarts, callback state visibility, counters, and timing reports in first/least-squares solvers |
 | Dense linear solvers | dense QR/Cholesky files | `ceres_torch.linear` | implemented | Dense QR and normal Cholesky cover damping, rank-deficient fallback, mixed-precision refinement, shape validation, and residual norms within Ceres-style tolerances |
 | Sparse/Schur solvers | Schur, CGNR, sparse Cholesky files | `ceres_torch.linear`, `schur`, `sparse_backends`, `cuda_backends`, `native/cuda` | partial | Dense Schur with ordering, pure PyTorch iterative paths, SciPy/SuperLU sparse normal and Schur backend, SuiteSparseQR-style covariance hook, PyTorch CUDA sparse/block-Schur backend, opt-in native CUDA extension |
 | Preconditioners | Jacobi, Schur, cluster, subset files | `ceres_torch.linear` | partial | Identity/Jacobi, exact block-Jacobi Schur/cluster/subset aliases from parameter block structure, specialized cluster graph forms planned |
 | Covariance | `covariance.h`, `covariance_impl.cc` | `ceres_torch.covariance`, `sparse_backends` | partial | Dense SVD/QR covariance blocks, loss toggle, constants, Ceres eigenvalue-ratio rank policy, rank summary, SciPy/SuperLU sparse direct covariance backend, optional SuiteSparseQR-style sparse QR covariance backend |
-| GradientProblemSolver | `gradient_problem_solver.h` | `ceres_torch.gradient_solver` | partial | General unconstrained minimization with validation, reports, counters, line search |
+| GradientProblemSolver | `gradient_problem_solver.h` | `ceres_torch.gradient_solver` | implemented | General unconstrained minimization with validation, reports, counters, line search, callback state visibility, manifold validation, and Ceres-style timing fields |
 | Callbacks/logging | `iteration_callback.h`, callbacks files | `ceres_torch.callbacks` | implemented | Iteration/evaluation callback behavior and summary visibility |
 | Tiny solver | `tiny_solver.h` | `ceres_torch.tiny_solver` | implemented | Small dense LM behavior with Ceres-style statuses, option validation, cost/gradient/step/function termination, and summary/report API |
 | C API | `c_api.h` | Not cloned | planned exception | Python callable/module support replaces C ABI |
@@ -66,3 +66,4 @@ areas. Status values:
 - `circle_fit.py`
 - `iteration_callback_example.py`
 - `evaluation_callback_example.py`
+- `robot_pose_mle.py`

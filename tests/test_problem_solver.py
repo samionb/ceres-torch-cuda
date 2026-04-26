@@ -112,6 +112,10 @@ def test_gradient_problem_options_validate_and_reports_include_counters(capsys: 
             max_line_search_step_contraction=0.8,
             min_line_search_step_contraction=0.6,
         ).validate()
+    with pytest.raises(ValueError, match="max_line_search_step_expansion"):
+        tc.GradientProblemSolverOptions(max_line_search_step_expansion=1.0).validate()
+    with pytest.raises(ValueError, match="line_search_sufficient_function_decrease"):
+        tc.GradientProblemSolverOptions(line_search_sufficient_function_decrease=1.0).validate()
 
     x = torch.tensor([-1.2, 1.0], dtype=torch.float64)
 
@@ -129,9 +133,86 @@ def test_gradient_problem_options_validate_and_reports_include_counters(capsys: 
     )
 
     assert summary.num_cost_evaluations >= summary.num_gradient_evaluations
+    assert summary.num_line_search_steps >= 0
+    assert summary.gradient_evaluation_time_in_seconds > 0.0
+    assert summary.line_search_interpolation_type is tc.LineSearchInterpolationType.CUBIC
+    assert summary.max_lbfgs_rank == 20
     assert "Gradient Solver Summary" in summary.FullReport()
     assert "Cost evaluations" in summary.FullReport()
+    assert "Line search steps" in summary.FullReport()
+    assert "Gradient evaluation time" in summary.FullReport()
     assert "0:" in capsys.readouterr().out
+
+
+def test_solver_options_validate_ceres_style_cross_option_rules() -> None:
+    with pytest.raises(ValueError, match="max_num_iterations"):
+        tc.SolverOptions(max_num_iterations=-1).validate()
+    with pytest.raises(ValueError, match="line_search_type"):
+        tc.SolverOptions(
+            line_search_direction_type=tc.LineSearchDirectionType.LBFGS,
+            line_search_type=tc.LineSearchType.ARMIJO,
+        ).validate()
+    with pytest.raises(ValueError, match="max_num_line_search_step_size_iterations"):
+        tc.SolverOptions(
+            minimizer_type=tc.MinimizerType.LINE_SEARCH,
+            max_num_line_search_step_size_iterations=0,
+        ).validate()
+    with pytest.raises(ValueError, match="DOGLEG"):
+        tc.SolverOptions(
+            trust_region_strategy_type=tc.TrustRegionStrategyType.DOGLEG,
+            linear_solver_type=tc.LinearSolverType.CGNR,
+        ).validate()
+    with pytest.raises(ValueError, match="use_mixed_precision_solves"):
+        tc.SolverOptions(
+            linear_solver_type=tc.LinearSolverType.DENSE_QR,
+            use_mixed_precision_solves=True,
+        ).validate()
+
+
+def test_gradient_problem_update_state_every_iteration_controls_callback_visibility() -> None:
+    def run(update_state_every_iteration: bool) -> tuple[tc.GradientProblemSolverSummary, torch.Tensor, list[float]]:
+        x = torch.tensor([0.0], dtype=torch.float64)
+        seen: list[float] = []
+
+        def objective(x: torch.Tensor) -> torch.Tensor:
+            return (x[0] - 2.0) ** 2
+
+        def callback(_iteration: tc.IterationSummary) -> tc.CallbackReturnType:
+            seen.append(float(x.item()))
+            return tc.CallbackReturnType.SOLVER_TERMINATE_SUCCESSFULLY
+
+        summary = tc.gradient_solve(
+            tc.GradientProblemSolverOptions(
+                line_search_direction_type=tc.LineSearchDirectionType.STEEPEST_DESCENT,
+                line_search_type=tc.LineSearchType.ARMIJO,
+                update_state_every_iteration=update_state_every_iteration,
+                callbacks=[callback],
+                gradient_tolerance=0.0,
+                function_tolerance=0.0,
+                parameter_tolerance=0.0,
+                max_num_iterations=5,
+            ),
+            tc.GradientProblem.from_callable(objective, size=1),
+            x,
+        )
+        return summary, x, seen
+
+    hidden_summary, hidden_x, hidden_seen = run(False)
+    visible_summary, visible_x, visible_seen = run(True)
+
+    assert hidden_summary.termination_type is tc.TerminationType.USER_SUCCESS
+    assert visible_summary.termination_type is tc.TerminationType.USER_SUCCESS
+    assert hidden_seen and hidden_seen[0] == pytest.approx(0.0)
+    assert visible_seen and visible_seen[0] != pytest.approx(0.0)
+    torch.testing.assert_close(hidden_x, visible_x, atol=1e-8, rtol=1e-8)
+
+
+def test_gradient_problem_manifold_dimension_validation() -> None:
+    x = torch.zeros(2, dtype=torch.float64)
+    problem = tc.GradientProblem.from_callable(lambda x: torch.sum(x * x), size=2, manifold=tc.EuclideanManifold(3))
+
+    with pytest.raises(ValueError, match="ambient size"):
+        tc.gradient_solve(tc.GradientProblemSolverOptions(), problem, x)
 
 
 @pytest.mark.parametrize(
@@ -209,6 +290,9 @@ def test_solve_line_search_direction_modes_converge_on_rosenbrock(
 
     assert summary.IsSolutionUsable()
     assert summary.line_search_direction_type is direction_type
+    assert summary.line_search_type is tc.LineSearchType.WOLFE
+    assert summary.nonlinear_conjugate_gradient_type is options.nonlinear_conjugate_gradient_type
+    assert summary.max_lbfgs_rank == options.max_lbfgs_rank
     assert summary.line_search_total_time_in_seconds >= 0.0
     assert summary.jacobian_evaluation_time_in_seconds > 0.0
     assert all(iteration.cumulative_time_in_seconds >= 0.0 for iteration in summary.iterations)
@@ -246,6 +330,7 @@ def test_solve_line_search_interpolation_modes_converge(interpolation_type: tc.L
     )
 
     assert summary.IsSolutionUsable()
+    assert summary.line_search_interpolation_type is interpolation_type
     torch.testing.assert_close(x, torch.tensor([1.0, 1.0], dtype=torch.float64), atol=1e-4, rtol=1e-4)
 
 
@@ -322,6 +407,8 @@ def test_solver_reports_detailed_timing_counters() -> None:
     assert "Jacobian evaluation time" in report
     assert "Linear solver time" in report
     assert "Preprocessor time" in report
+    assert "Preconditioner" in report
+    assert "Line search interpolation" in report
 
 
 def test_levenberg_marquardt_radius_update_matches_ceres_strategy() -> None:

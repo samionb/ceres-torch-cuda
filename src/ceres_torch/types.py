@@ -149,6 +149,7 @@ class IterationSummary:
     line_search_function_evaluations: int = 0
     line_search_gradient_evaluations: int = 0
     line_search_iterations: int = 0
+    line_search_direction_restarts: int = 0
     linear_solver_iterations: int = 0
     residual_evaluation_time_in_seconds: float = 0.0
     jacobian_evaluation_time_in_seconds: float = 0.0
@@ -228,6 +229,7 @@ class SolverOptions:
     callbacks: list[Callable[[IterationSummary], CallbackReturnType]] = field(default_factory=list)
 
     def validate(self) -> None:
+        line_search_min_iterations = 0 if self.minimizer_type is MinimizerType.TRUST_REGION else 1
         checks = [
             (self.max_num_iterations >= 0, "max_num_iterations must be >= 0"),
             (self.max_solver_time_in_seconds >= 0, "max_solver_time_in_seconds must be >= 0"),
@@ -235,6 +237,15 @@ class SolverOptions:
             (self.gradient_tolerance >= 0, "gradient_tolerance must be >= 0"),
             (self.parameter_tolerance >= 0, "parameter_tolerance must be >= 0"),
             (self.num_threads > 0, "num_threads must be > 0"),
+            (
+                (not self.check_gradients) or self.gradient_check_relative_precision > 0,
+                "gradient_check_relative_precision must be > 0 when check_gradients is enabled",
+            ),
+            (
+                (not self.check_gradients)
+                or self.gradient_check_numeric_derivative_relative_step_size > 0,
+                "gradient_check_numeric_derivative_relative_step_size must be > 0 when check_gradients is enabled",
+            ),
             (self.initial_trust_region_radius > 0, "initial_trust_region_radius must be > 0"),
             (self.min_trust_region_radius > 0, "min_trust_region_radius must be > 0"),
             (self.max_trust_region_radius > 0, "max_trust_region_radius must be > 0"),
@@ -242,12 +253,108 @@ class SolverOptions:
                 self.min_trust_region_radius <= self.initial_trust_region_radius <= self.max_trust_region_radius,
                 "trust region radii must satisfy min <= initial <= max",
             ),
+            (self.min_relative_decrease >= 0, "min_relative_decrease must be >= 0"),
+            (self.min_lm_diagonal >= 0, "min_lm_diagonal must be >= 0"),
+            (self.max_lm_diagonal >= 0, "max_lm_diagonal must be >= 0"),
+            (self.min_lm_diagonal <= self.max_lm_diagonal, "min_lm_diagonal must be <= max_lm_diagonal"),
+            (
+                self.max_num_consecutive_invalid_steps >= 0,
+                "max_num_consecutive_invalid_steps must be >= 0",
+            ),
+            (self.eta > 0, "eta must be > 0"),
+            (self.min_linear_solver_iterations >= 0, "min_linear_solver_iterations must be >= 0"),
+            (self.max_linear_solver_iterations >= 0, "max_linear_solver_iterations must be >= 0"),
+            (
+                self.min_linear_solver_iterations <= self.max_linear_solver_iterations,
+                "min_linear_solver_iterations must be <= max_linear_solver_iterations",
+            ),
+            (
+                (not self.use_inner_iterations) or self.inner_iteration_tolerance >= 0,
+                "inner_iteration_tolerance must be >= 0 when use_inner_iterations is enabled",
+            ),
+            (
+                (not self.use_nonmonotonic_steps) or self.max_consecutive_nonmonotonic_steps > 0,
+                "max_consecutive_nonmonotonic_steps must be > 0 when use_nonmonotonic_steps is enabled",
+            ),
             (self.max_lbfgs_rank > 0, "max_lbfgs_rank must be > 0"),
             (self.min_line_search_step_size > 0, "min_line_search_step_size must be > 0"),
+            (self.max_line_search_step_contraction > 0, "max_line_search_step_contraction must be > 0"),
+            (self.max_line_search_step_contraction < 1, "max_line_search_step_contraction must be < 1"),
+            (
+                self.max_line_search_step_contraction < self.min_line_search_step_contraction,
+                "max_line_search_step_contraction must be < min_line_search_step_contraction",
+            ),
+            (self.min_line_search_step_contraction <= 1, "min_line_search_step_contraction must be <= 1"),
+            (
+                self.max_num_line_search_step_size_iterations >= line_search_min_iterations,
+                "max_num_line_search_step_size_iterations is too small for the minimizer type",
+            ),
+            (
+                self.max_num_line_search_direction_restarts >= 0,
+                "max_num_line_search_direction_restarts must be >= 0",
+            ),
+            (
+                self.line_search_sufficient_function_decrease > 0,
+                "line_search_sufficient_function_decrease must be > 0",
+            ),
+            (
+                self.line_search_sufficient_function_decrease
+                < self.line_search_sufficient_curvature_decrease,
+                "line_search_sufficient_function_decrease must be < line_search_sufficient_curvature_decrease",
+            ),
+            (
+                self.line_search_sufficient_curvature_decrease < 1,
+                "line_search_sufficient_curvature_decrease must be < 1",
+            ),
+            (self.max_line_search_step_expansion > 1, "max_line_search_step_expansion must be > 1"),
+            (self.max_num_refinement_iterations >= 0, "max_num_refinement_iterations must be >= 0"),
         ]
         for ok, message in checks:
             if not ok:
                 raise ValueError(message)
+        if (
+            self.trust_region_strategy_type is TrustRegionStrategyType.DOGLEG
+            and self.linear_solver_type in {LinearSolverType.CGNR, LinearSolverType.ITERATIVE_SCHUR}
+        ):
+            raise ValueError("DOGLEG only supports exact factorization based linear solvers")
+        if (
+            self.line_search_direction_type in {LineSearchDirectionType.BFGS, LineSearchDirectionType.LBFGS}
+            and self.line_search_type is not LineSearchType.WOLFE
+        ):
+            raise ValueError("line_search_type must be WOLFE when using BFGS or LBFGS")
+        if self.linear_solver_type is LinearSolverType.DENSE_QR and self.use_mixed_precision_solves:
+            raise ValueError("use_mixed_precision_solves cannot be used with DENSE_QR")
+        if self.linear_solver_type in {
+            LinearSolverType.DENSE_SCHUR,
+            LinearSolverType.SPARSE_SCHUR,
+            LinearSolverType.ITERATIVE_SCHUR,
+            LinearSolverType.CGNR,
+        } and self.dynamic_sparsity:
+            raise ValueError("dynamic_sparsity is only supported with SPARSE_NORMAL_CHOLESKY")
+        if self.linear_solver_type is LinearSolverType.ITERATIVE_SCHUR:
+            if self.use_explicit_schur_complement:
+                if self.preconditioner_type is not PreconditionerType.SCHUR_JACOBI:
+                    raise ValueError("use_explicit_schur_complement only supports SCHUR_JACOBI")
+                if self.use_spse_initialization:
+                    raise ValueError("use_explicit_schur_complement does not support use_spse_initialization")
+            if self.use_spse_initialization or self.preconditioner_type is PreconditionerType.SCHUR_POWER_SERIES_EXPANSION:
+                if self.max_num_spse_iterations < 1:
+                    raise ValueError("max_num_spse_iterations must be >= 1")
+                if self.spse_tolerance < 0:
+                    raise ValueError("spse_tolerance must be >= 0")
+            if self.use_mixed_precision_solves:
+                raise ValueError("use_mixed_precision_solves cannot be used with ITERATIVE_SCHUR")
+            if self.preconditioner_type is PreconditionerType.SUBSET:
+                raise ValueError("SUBSET preconditioner cannot be used with ITERATIVE_SCHUR")
+        if self.linear_solver_type is LinearSolverType.CGNR:
+            if self.preconditioner_type not in {
+                PreconditionerType.IDENTITY,
+                PreconditionerType.JACOBI,
+                PreconditionerType.SUBSET,
+            }:
+                raise ValueError("CGNR only supports IDENTITY, JACOBI, or SUBSET preconditioners")
+            if self.use_mixed_precision_solves:
+                raise ValueError("use_mixed_precision_solves cannot be used with CGNR")
 
 
 @dataclass
@@ -267,6 +374,7 @@ class SolverSummary:
     num_line_search_steps: int = 0
     num_line_search_function_evaluations: int = 0
     num_line_search_gradient_evaluations: int = 0
+    num_line_search_direction_restarts: int = 0
     line_search_total_time_in_seconds: float = 0.0
     preprocessor_time_in_seconds: float = 0.0
     minimizer_time_in_seconds: float = 0.0
@@ -284,8 +392,17 @@ class SolverSummary:
     linear_solver_type_given: LinearSolverType = LinearSolverType.DENSE_QR
     linear_solver_type_used: LinearSolverType = LinearSolverType.DENSE_QR
     trust_region_strategy_type: TrustRegionStrategyType = TrustRegionStrategyType.LEVENBERG_MARQUARDT
+    dogleg_type: DoglegType = DoglegType.TRADITIONAL_DOGLEG
     line_search_direction_type: LineSearchDirectionType = LineSearchDirectionType.LBFGS
     line_search_type: LineSearchType = LineSearchType.WOLFE
+    line_search_interpolation_type: LineSearchInterpolationType = LineSearchInterpolationType.CUBIC
+    nonlinear_conjugate_gradient_type: NonlinearConjugateGradientType = (
+        NonlinearConjugateGradientType.FLETCHER_REEVES
+    )
+    preconditioner_type: PreconditionerType = PreconditionerType.JACOBI
+    max_lbfgs_rank: int = 20
+    dense_linear_algebra_library_type: DenseLinearAlgebraLibraryType = DenseLinearAlgebraLibraryType.EIGEN
+    sparse_linear_algebra_library_type: SparseLinearAlgebraLibraryType = SparseLinearAlgebraLibraryType.NO_SPARSE
 
     def IsSolutionUsable(self) -> bool:
         return self.termination_type in {
@@ -310,6 +427,16 @@ class SolverSummary:
                 "",
                 f"Minimizer: {self.minimizer_type.value}",
                 f"Linear solver: {self.linear_solver_type_used.value}",
+                f"Preconditioner: {self.preconditioner_type.value}",
+                f"Trust region strategy: {self.trust_region_strategy_type.value}",
+                f"Dogleg type: {self.dogleg_type.value}",
+                f"Line search direction: {self.line_search_direction_type.value}",
+                f"Line search type: {self.line_search_type.value}",
+                f"Line search interpolation: {self.line_search_interpolation_type.value}",
+                f"Nonlinear conjugate gradient: {self.nonlinear_conjugate_gradient_type.value}",
+                f"LBFGS rank: {self.max_lbfgs_rank}",
+                f"Dense linear algebra library: {self.dense_linear_algebra_library_type.value}",
+                f"Sparse linear algebra library: {self.sparse_linear_algebra_library_type.value}",
                 f"Parameter blocks: {self.num_parameter_blocks}",
                 f"Parameters: {self.num_parameters}",
                 f"Effective parameters: {self.num_effective_parameters}",
@@ -323,6 +450,7 @@ class SolverSummary:
                 f"Line search steps: {self.num_line_search_steps}",
                 f"Line search function evaluations: {self.num_line_search_function_evaluations}",
                 f"Line search gradient evaluations: {self.num_line_search_gradient_evaluations}",
+                f"Line search direction restarts: {self.num_line_search_direction_restarts}",
                 f"Residual evaluation time (s): {self.residual_evaluation_time_in_seconds:.6f}",
                 f"Jacobian evaluation time (s): {self.jacobian_evaluation_time_in_seconds:.6f}",
                 f"Linear solver time (s): {self.linear_solver_time_in_seconds:.6f}",

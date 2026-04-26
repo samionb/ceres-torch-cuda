@@ -43,6 +43,31 @@ def test_covariance_rank_deficiency_policy() -> None:
     assert pseudo_inverse.summary.nullity == 1
 
 
+def test_covariance_translation_gauge_has_zero_null_direction_and_finite_relative_variance() -> None:
+    x0 = torch.tensor([0.0], dtype=torch.float64)
+    x1 = torch.tensor([1.0], dtype=torch.float64)
+    problem = tc.Problem()
+    b0 = problem.add_parameter_block(x0)
+    b1 = problem.add_parameter_block(x1)
+    problem.add_residual_block(tc.AutoDiffCostFunction(lambda a, b: b - a - 1.0, [1, 1]), None, [x0, x1])
+
+    strict = tc.Covariance(tc.CovarianceOptions())
+    assert not strict.compute([(b0, b0), (b0, b1), (b1, b1)], problem)
+    assert strict.summary.rank == 1
+    assert strict.summary.nullity == 1
+
+    gauge_aware = tc.Covariance(tc.CovarianceOptions(null_space_rank=-1))
+    assert gauge_aware.compute([(b0, b0), (b0, b1), (b1, b1)], problem)
+    matrix = gauge_aware.get_covariance_matrix_in_tangent_space([b0, b1])
+    gauge_direction = torch.tensor([1.0, 1.0], dtype=torch.float64)
+    relative_direction = torch.tensor([-1.0, 1.0], dtype=torch.float64)
+
+    torch.testing.assert_close(matrix @ gauge_direction, torch.zeros(2, dtype=torch.float64), atol=1e-10, rtol=1e-10)
+    torch.testing.assert_close(relative_direction @ matrix @ relative_direction, torch.tensor(1.0, dtype=torch.float64))
+    assert gauge_aware.summary.rank == 1
+    assert gauge_aware.summary.nullity == 1
+
+
 def test_covariance_options_validate() -> None:
     with pytest.raises(ValueError, match="null_space_rank"):
         tc.CovarianceOptions(null_space_rank=-2).validate()
