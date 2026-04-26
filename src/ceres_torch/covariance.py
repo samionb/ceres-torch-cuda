@@ -41,6 +41,10 @@ class CovarianceSummary:
     nullity: int = 0
     num_rows: int = 0
     num_columns: int = 0
+    num_requested_blocks: int = 0
+    num_computed_blocks: int = 0
+    ambient_dimension: int = 0
+    tangent_dimension: int = 0
     max_singular_value: float = 0.0
     min_retained_singular_value: float = 0.0
     reciprocal_condition_number: float = 0.0
@@ -74,13 +78,10 @@ class Covariance:
             self._blocks = set()
             self.summary.success = True
             self.summary.message = "No covariance blocks requested."
+            self.summary.ambient_dimension = problem.num_parameters()
+            self.summary.tangent_dimension = problem.num_effective_parameters()
             return True
-        first = covariance_blocks[0]  # type: ignore[index]
-        if isinstance(first, tuple):
-            pairs = [(problem._require_parameter_block(a), problem._require_parameter_block(b)) for a, b in covariance_blocks]  # type: ignore[misc]
-        else:
-            params = [problem._require_parameter_block(p) for p in covariance_blocks]  # type: ignore[assignment]
-            pairs = [(a, b) for a in params for b in params]
+        pairs = self._normalize_covariance_blocks(covariance_blocks, problem)
         self._blocks = set(pairs) | {(b, a) for a, b in pairs}
         evaluation = problem.evaluate(
             EvaluateOptions(apply_loss_function=self.options.apply_loss_function),
@@ -91,6 +92,10 @@ class Covariance:
             return False
         J = evaluation.jacobian
         self._slices = problem.parameter_tangent_slices(active_only=True)
+        self.summary.num_requested_blocks = len(pairs)
+        self.summary.num_computed_blocks = len(self._blocks)
+        self.summary.ambient_dimension = problem.num_parameters()
+        self.summary.tangent_dimension = J.shape[1]
         if J.shape[1] == 0:
             self._tangent_covariance = J.new_zeros((0, 0))
             self._set_summary_from_singular_values(
@@ -116,6 +121,8 @@ class Covariance:
                     pass
             return self._compute_qr_covariance(J)
         return self._compute_svd_covariance(J)
+
+    Compute = compute
 
     def _compute_svd_covariance(self, J: torch.Tensor) -> bool:
         _, S, Vh = torch.linalg.svd(J, full_matrices=False)
@@ -172,16 +179,18 @@ class Covariance:
 
     def _compute_qr_covariance(self, J: torch.Tensor) -> bool:
         if J.shape[0] < J.shape[1]:
-            if self.options.null_space_rank != 0:
-                return self._compute_svd_covariance(J)
             self.summary = CovarianceSummary(
                 algorithm_type=self.options.algorithm_type,
                 success=False,
-                message="Sparse QR covariance requires rows >= columns.",
+                message="Sparse QR covariance requires rows >= columns and cannot use null_space_rank.",
                 rank=J.shape[0],
                 nullity=J.shape[1] - J.shape[0],
                 num_rows=J.shape[0],
                 num_columns=J.shape[1],
+                num_requested_blocks=self.summary.num_requested_blocks,
+                num_computed_blocks=self.summary.num_computed_blocks,
+                ambient_dimension=self.summary.ambient_dimension,
+                tangent_dimension=self.summary.tangent_dimension,
                 requested_null_space_rank=self.options.null_space_rank,
             )
             return False
@@ -193,13 +202,11 @@ class Covariance:
         threshold = self._qr_threshold(diag, J.shape)
         rank = int(torch.sum(diag > threshold).detach().cpu())
         if rank < J.shape[1]:
-            if self.options.null_space_rank != 0:
-                return self._compute_svd_covariance(J)
             self._set_summary_from_singular_values(
                 torch.linalg.svdvals(J),
                 J.shape,
                 success=False,
-                message="Sparse QR detected a rank deficient Jacobian.",
+                message="Sparse QR detected a rank deficient Jacobian and cannot use null_space_rank.",
             )
             return False
         singular_values = torch.linalg.svdvals(J)
@@ -222,30 +229,63 @@ class Covariance:
         )
         return True
 
-    def get_covariance_block(self, a: ParameterBlock | torch.Tensor, b: ParameterBlock | torch.Tensor) -> torch.Tensor:
+    def get_covariance_block(
+        self,
+        a: ParameterBlock | torch.Tensor,
+        b: ParameterBlock | torch.Tensor,
+        out: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         block = self._get_tangent_block(a, b)
         assert self._problem is not None
         pa = self._problem._require_parameter_block(a)
         pb = self._problem._require_parameter_block(b)
         Ja = self._ambient_to_tangent_basis(pa, dtype=block.dtype, device=block.device)
         Jb = self._ambient_to_tangent_basis(pb, dtype=block.dtype, device=block.device)
-        return Ja @ block @ Jb.T
+        return _copy_to_output(Ja @ block @ Jb.T, out)
 
     def get_covariance_block_in_tangent_space(
-        self, a: ParameterBlock | torch.Tensor, b: ParameterBlock | torch.Tensor
+        self,
+        a: ParameterBlock | torch.Tensor,
+        b: ParameterBlock | torch.Tensor,
+        out: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        return self._get_tangent_block(a, b)
+        return _copy_to_output(self._get_tangent_block(a, b), out)
 
-    def get_covariance_matrix(self, parameter_blocks: Sequence[ParameterBlock | torch.Tensor]) -> torch.Tensor:
+    def get_covariance_matrix(
+        self,
+        parameter_blocks: Sequence[ParameterBlock | torch.Tensor],
+        out: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         rows = [torch.cat([self.get_covariance_block(a, b) for b in parameter_blocks], dim=1) for a in parameter_blocks]
-        return torch.cat(rows, dim=0)
+        return _copy_to_output(torch.cat(rows, dim=0), out)
 
-    def get_covariance_matrix_in_tangent_space(self, parameter_blocks: Sequence[ParameterBlock | torch.Tensor]) -> torch.Tensor:
+    def get_covariance_matrix_in_tangent_space(
+        self,
+        parameter_blocks: Sequence[ParameterBlock | torch.Tensor],
+        out: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         rows = [
             torch.cat([self.get_covariance_block_in_tangent_space(a, b) for b in parameter_blocks], dim=1)
             for a in parameter_blocks
         ]
-        return torch.cat(rows, dim=0)
+        return _copy_to_output(torch.cat(rows, dim=0), out)
+
+    GetCovarianceBlock = get_covariance_block
+    GetCovarianceBlockInTangentSpace = get_covariance_block_in_tangent_space
+    GetCovarianceMatrix = get_covariance_matrix
+    GetCovarianceMatrixInTangentSpace = get_covariance_matrix_in_tangent_space
+
+    def has_covariance_block(self, a: ParameterBlock | torch.Tensor, b: ParameterBlock | torch.Tensor) -> bool:
+        if self._problem is None:
+            return False
+        try:
+            pa = self._problem._require_parameter_block(a)
+            pb = self._problem._require_parameter_block(b)
+        except KeyError:
+            return False
+        return (pa, pb) in self._blocks
+
+    HasCovarianceBlock = has_covariance_block
 
     def rank(self) -> int:
         return self.summary.rank
@@ -327,11 +367,36 @@ class Covariance:
             nullity=max(0, shape[1] - rank),
             num_rows=shape[0],
             num_columns=shape[1],
+            num_requested_blocks=self.summary.num_requested_blocks,
+            num_computed_blocks=self.summary.num_computed_blocks,
+            ambient_dimension=self.summary.ambient_dimension,
+            tangent_dimension=self.summary.tangent_dimension,
             max_singular_value=max_sigma,
             min_retained_singular_value=min_retained,
             reciprocal_condition_number=reciprocal_condition,
             requested_null_space_rank=self.options.null_space_rank,
         )
+
+    def _normalize_covariance_blocks(
+        self,
+        covariance_blocks: Sequence[tuple[ParameterBlock | torch.Tensor, ParameterBlock | torch.Tensor]]
+        | Sequence[ParameterBlock | torch.Tensor],
+        problem: Problem,
+    ) -> list[tuple[ParameterBlock, ParameterBlock]]:
+        first = covariance_blocks[0]  # type: ignore[index]
+        if isinstance(first, tuple):
+            pairs = [(problem._require_parameter_block(a), problem._require_parameter_block(b)) for a, b in covariance_blocks]  # type: ignore[misc]
+            seen: set[frozenset[ParameterBlock]] = set()
+            for a, b in pairs:
+                key = frozenset((a, b))
+                if key in seen:
+                    raise ValueError("covariance_blocks cannot contain duplicate block pairs")
+                seen.add(key)
+            return pairs
+        params = [problem._require_parameter_block(p) for p in covariance_blocks]  # type: ignore[assignment]
+        if len(set(params)) != len(params):
+            raise ValueError("parameter_blocks cannot contain duplicates")
+        return [(a, b) for a in params for b in params]
 
 
 def _eigenvalue_ratios_from_singular_values(singular_values: torch.Tensor) -> torch.Tensor:
@@ -339,3 +404,12 @@ def _eigenvalue_ratios_from_singular_values(singular_values: torch.Tensor) -> to
         return singular_values
     max_s = singular_values.max().clamp_min(torch.finfo(singular_values.dtype).tiny)
     return (singular_values / max_s) ** 2
+
+
+def _copy_to_output(value: torch.Tensor, out: torch.Tensor | None) -> torch.Tensor:
+    if out is None:
+        return value
+    if out.numel() != value.numel():
+        raise ValueError("Output tensor has the wrong number of elements")
+    out.reshape(-1).copy_(value.reshape(-1).to(dtype=out.dtype, device=out.device))
+    return out

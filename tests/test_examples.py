@@ -105,3 +105,20 @@ def test_robot_pose_mle_example_reduces_range_errors() -> None:
     assert summary.IsSolutionUsable()
     assert final_rmse < initial_rmse
     assert abs(final_odometry.sum().item() - 5.0) < abs(initial_odometry.sum().item() - 5.0)
+
+
+def test_simple_bundle_adjuster_parses_bal_and_recovers_points(tmp_path: Path) -> None:
+    module = load_example("simple_bundle_adjuster")
+    text, true_cameras, true_points = module.make_tiny_bal_problem()
+    path = tmp_path / "tiny.bal"
+    path.write_text(text)
+
+    summary, cameras, points, bal_problem = module.run(path, fix_cameras=True, max_num_iterations=40)
+
+    assert bal_problem.num_cameras == 2
+    assert bal_problem.num_points == 3
+    assert bal_problem.num_observations == 6
+    assert summary.IsSolutionUsable()
+    assert summary.final_cost < 1e-12
+    torch.testing.assert_close(cameras, true_cameras, atol=1e-12, rtol=1e-12)
+    torch.testing.assert_close(points, true_points, atol=1e-5, rtol=1e-5)
