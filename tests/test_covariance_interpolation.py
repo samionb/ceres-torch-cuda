@@ -173,6 +173,59 @@ def test_grid1d_ceres_flat_layouts_and_clamped_window() -> None:
     torch.testing.assert_close(stacked_grid.get(9), torch.tensor([1.0, 5.0], dtype=torch.float64))
     torch.testing.assert_close(stacked_grid.get(99), torch.tensor([3.0, 7.0], dtype=torch.float64))
     assert interleaved_grid.data_dimension == 2
+    assert interleaved_grid.DATA_DIMENSION == 2
+    torch.testing.assert_close(interleaved_grid.GetValue(11), torch.tensor([2.0, 6.0], dtype=torch.float64))
+
+
+@pytest.mark.parametrize(
+    "coefficients",
+    [
+        (0.0, 0.0, 0.0, 0.5),
+        (0.0, 0.0, 1.0, 0.5),
+        (0.0, 0.4, 1.0, 0.5),
+    ],
+)
+@pytest.mark.parametrize("data_dimension", [1, 2, 3])
+def test_cubic_interpolator_matches_ceres_polynomial_cases(
+    coefficients: tuple[float, float, float, float],
+    data_dimension: int,
+) -> None:
+    a, b, c, d = coefficients
+    samples = []
+    for x in range(10):
+        base = a * x**3 + b * x**2 + c * x + d
+        samples.extend((dim * dim + 1.0) * base for dim in range(data_dimension))
+    interpolator = tc.CubicInterpolator(
+        tc.Grid1D(torch.tensor(samples, dtype=torch.float64), end=10, data_dimension=data_dimension)
+    )
+
+    for x in torch.linspace(1.0, 8.0, 25, dtype=torch.float64):
+        value, derivative = interpolator.Evaluate(x)
+        expected_value = torch.tensor(
+            [(dim * dim + 1.0) * (a * x.item() ** 3 + b * x.item() ** 2 + c * x.item() + d) for dim in range(data_dimension)],
+            dtype=torch.float64,
+        )
+        expected_derivative = torch.tensor(
+            [(dim * dim + 1.0) * (3.0 * a * x.item() ** 2 + 2.0 * b * x.item() + c) for dim in range(data_dimension)],
+            dtype=torch.float64,
+        )
+        if data_dimension == 1:
+            expected_value = expected_value.reshape(())
+            expected_derivative = expected_derivative.reshape(())
+        torch.testing.assert_close(value, expected_value, atol=1e-12, rtol=1e-12)
+        torch.testing.assert_close(derivative, expected_derivative, atol=1e-12, rtol=1e-12)
+
+
+def test_cubic_interpolator_autograd_matches_reported_derivative() -> None:
+    values = torch.tensor([1.0, 2.0, 2.0, 5.0, 3.0, 9.0, 2.0, 7.0], dtype=torch.float64)
+    interpolator = tc.CubicInterpolator(tc.Grid1D(values, end=4, data_dimension=2))
+    x = torch.tensor(2.5, dtype=torch.float64, requires_grad=True)
+
+    value, derivative = interpolator.Evaluate(x)
+    grad0 = torch.autograd.grad(value[0], x, retain_graph=True)[0]
+    grad1 = torch.autograd.grad(value[1], x)[0]
+
+    torch.testing.assert_close(torch.stack([grad0, grad1]), derivative, atol=1e-12, rtol=1e-12)
 
 
 def test_bicubic_interpolator_derivatives_for_planar_data() -> None:
@@ -240,6 +293,33 @@ def test_grid2d_ceres_flat_storage_layouts() -> None:
                 torch.testing.assert_close(grid.get(row, col), expected)
         torch.testing.assert_close(grid.get(-10, -10), torch.tensor([1.0, 4.0], dtype=torch.float64))
         torch.testing.assert_close(grid.get(10, 10), torch.tensor([4.0, 16.0], dtype=torch.float64))
+        assert grid.DATA_DIMENSION == 2
+        torch.testing.assert_close(grid.GetValue(0, 1), torch.tensor([2.0, 8.0], dtype=torch.float64))
+
+
+def test_grid2d_ceres_one_dimensional_out_of_bounds_clamping() -> None:
+    data = torch.tensor([1, 2, 3, 2, 3, 4], dtype=torch.float64)
+    grid = tc.Grid2D(data, row_end=2, col_end=3, data_dimension=1)
+
+    expected = {
+        (-1, -1): 1.0,
+        (-1, 0): 1.0,
+        (-1, 1): 2.0,
+        (-1, 2): 3.0,
+        (-1, 3): 3.0,
+        (0, 3): 3.0,
+        (1, 3): 4.0,
+        (2, 3): 4.0,
+        (2, 2): 4.0,
+        (2, 1): 3.0,
+        (2, 0): 2.0,
+        (2, -1): 2.0,
+        (1, -1): 2.0,
+        (0, -1): 1.0,
+    }
+
+    for (row, col), value in expected.items():
+        torch.testing.assert_close(grid.GetValue(row, col), torch.tensor(value, dtype=torch.float64))
 
 
 def test_bicubic_interpolator_matches_shaped_grid_with_flat_stacked_data() -> None:
@@ -269,3 +349,76 @@ def test_bicubic_interpolator_matches_shaped_grid_with_flat_stacked_data() -> No
 
     for flat_tensor, shaped_tensor in zip(flat_value, shaped_value):
         torch.testing.assert_close(flat_tensor, shaped_tensor)
+
+
+@pytest.mark.parametrize(
+    "coefficients",
+    [
+        torch.zeros((3, 3), dtype=torch.float64),
+        torch.tensor([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 1.0]], dtype=torch.float64),
+        torch.tensor([[0.0, 0.0, 0.1], [0.0, 0.0, 0.0], [0.1, 0.0, 1.0]], dtype=torch.float64),
+        torch.tensor([[0.0, 0.1, 0.0], [0.1, 0.0, 0.0], [0.0, 0.0, 1.0]], dtype=torch.float64),
+        torch.tensor([[0.0, 0.1, 0.2], [0.1, 0.0, 0.0], [0.2, 0.0, 1.0]], dtype=torch.float64),
+        torch.tensor([[0.0, 0.1, 0.2], [0.1, 0.3, 0.0], [0.2, 0.0, 1.0]], dtype=torch.float64),
+        torch.tensor([[0.3, 0.1, 0.2], [0.1, 0.0, 0.0], [0.2, 0.0, 1.0]], dtype=torch.float64),
+        torch.tensor([[0.3, -0.4, 0.2], [-0.4, 0.0, 0.0], [0.2, 0.0, 1.0]], dtype=torch.float64),
+    ],
+)
+@pytest.mark.parametrize("data_dimension", [1, 2, 3])
+def test_bicubic_interpolator_matches_ceres_quadratic_cases(
+    coefficients: torch.Tensor,
+    data_dimension: int,
+) -> None:
+    def evaluate(row: torch.Tensor, col: torch.Tensor) -> torch.Tensor:
+        x = torch.stack([row, col, row.new_tensor(1.0)])
+        return x @ coefficients @ x
+
+    rows = []
+    for row in range(10):
+        row_values = []
+        for col in range(10):
+            base = evaluate(torch.tensor(float(row), dtype=torch.float64), torch.tensor(float(col), dtype=torch.float64))
+            row_values.append(torch.stack([(dim * dim + 1.0) * base for dim in range(data_dimension)]))
+        rows.append(torch.stack(row_values))
+    data = torch.stack(rows)
+    if data_dimension == 1:
+        data = data[..., 0]
+    interpolator = tc.BiCubicInterpolator(tc.Grid2D(data))
+
+    for row in torch.linspace(1.0, 8.0, 9, dtype=torch.float64):
+        for col in torch.linspace(1.0, 8.0, 9, dtype=torch.float64):
+            value, drow, dcol = interpolator.Evaluate(row, col)
+            x = torch.stack([row, col, row.new_tensor(1.0)])
+            base = x @ coefficients @ x
+            base_drow = (coefficients[0, :] + coefficients[:, 0]) @ x
+            base_dcol = (coefficients[1, :] + coefficients[:, 1]) @ x
+            expected_value = torch.stack([(dim * dim + 1.0) * base for dim in range(data_dimension)])
+            expected_drow = torch.stack([(dim * dim + 1.0) * base_drow for dim in range(data_dimension)])
+            expected_dcol = torch.stack([(dim * dim + 1.0) * base_dcol for dim in range(data_dimension)])
+            if data_dimension == 1:
+                expected_value = expected_value.reshape(())
+                expected_drow = expected_drow.reshape(())
+                expected_dcol = expected_dcol.reshape(())
+            torch.testing.assert_close(value, expected_value, atol=1e-12, rtol=1e-12)
+            torch.testing.assert_close(drow, expected_drow, atol=1e-12, rtol=1e-12)
+            torch.testing.assert_close(dcol, expected_dcol, atol=1e-12, rtol=1e-12)
+
+
+def test_bicubic_interpolator_autograd_matches_reported_derivatives() -> None:
+    data = torch.tensor(
+        [
+            [[1.0, 5.0], [2.0, 10.0], [2.0, 6.0], [3.0, 5.0]],
+            [[1.0, 2.0], [2.0, 2.0], [2.0, 2.0], [3.0, 1.0]],
+        ],
+        dtype=torch.float64,
+    )
+    interpolator = tc.BiCubicInterpolator(tc.Grid2D(data))
+    row = torch.tensor(0.5, dtype=torch.float64, requires_grad=True)
+    col = torch.tensor(2.5, dtype=torch.float64, requires_grad=True)
+
+    value, drow, dcol = interpolator.Evaluate(row, col)
+    grad_row0, grad_col0 = torch.autograd.grad(value[0], (row, col), retain_graph=True)
+    grad_row1, grad_col1 = torch.autograd.grad(value[1], (row, col))
+
+    torch.testing.assert_close(torch.stack([grad_row0, grad_row1]), drow, atol=1e-12, rtol=1e-12)
+    torch.testing.assert_close(torch.stack([grad_col0, grad_col1]), dcol, atol=1e-12, rtol=1e-12)

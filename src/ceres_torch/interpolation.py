@@ -117,6 +117,12 @@ class Grid1D:
     def data_dimension(self) -> int:
         return self._data_dimension
 
+    @property
+    def DATA_DIMENSION(self) -> int:
+        return self._data_dimension
+
+    GetValue = get
+
 
 class CubicInterpolator:
     def __init__(self, grid: Grid1D) -> None:
@@ -221,6 +227,12 @@ class Grid2D:
     @property
     def data_dimension(self) -> int:
         return self._data_dimension
+
+    @property
+    def DATA_DIMENSION(self) -> int:
+        return self._data_dimension
+
+    GetValue = get
 
 
 class BiCubicInterpolator:
