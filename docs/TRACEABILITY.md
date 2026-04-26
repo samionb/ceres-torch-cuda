@@ -20,8 +20,8 @@ areas. Status values:
 | Trust region minimizer | `trust_region_minimizer.cc` | `ceres_torch.solver` | partial | LM/dogleg convergence, Ceres-style LM radius updates, projected constrained line search, nonmonotonic step evaluator with best-state restoration, inner iterations, progress and detailed timing counters |
 | Line search minimizer | `line_search_minimizer.cc` | `ceres_torch.gradient_solver`, `solver` | implemented | Armijo/Wolfe, shared interpolation modes, steepest, NCG, BFGS/LBFGS coverage, direction restarts, callback state visibility, counters, and timing reports in first/least-squares solvers |
 | Dense linear solvers | dense QR/Cholesky files | `ceres_torch.linear` | implemented | Dense QR and normal Cholesky cover damping, rank-deficient fallback, mixed-precision refinement, shape validation, and residual norms within Ceres-style tolerances |
-| Sparse/Schur solvers | Schur, CGNR, sparse Cholesky files | `ceres_torch.linear`, `schur`, `sparse_backends`, `cuda_backends`, `native/cuda` | partial | Dense Schur with ordering, pure PyTorch iterative paths, SciPy/SuperLU sparse normal and Schur backend, SuiteSparseQR-style covariance hook, PyTorch CUDA sparse/block-Schur backend, opt-in native CUDA extension |
-| Preconditioners | Jacobi, Schur, cluster, subset files | `ceres_torch.linear` | partial | Identity/Jacobi, exact block-Jacobi Schur/cluster/subset aliases from parameter block structure, specialized cluster graph forms planned |
+| Sparse/Schur solvers | Schur, CGNR, sparse Cholesky files | `ceres_torch.linear`, `schur`, `sparse_backends`, `cuda_backends`, `native/cuda` | partial | Dense Schur with ordering, pure PyTorch CGNR and iterative Schur CG paths, SciPy/SuperLU sparse normal and Schur backend, SuiteSparseQR-style covariance hook, PyTorch CUDA sparse/block-Schur backend, opt-in native CUDA extension |
+| Preconditioners | Jacobi, Schur, cluster, subset files | `ceres_torch.linear` | partial | Identity/Jacobi, exact block-Jacobi Schur/cluster/subset aliases, Schur power-series expansion preconditioner, specialized cluster graph forms planned |
 | Covariance | `covariance.h`, `covariance_impl.cc` | `ceres_torch.covariance`, `sparse_backends` | partial | Dense SVD/QR covariance blocks, loss toggle, constants, Ceres eigenvalue-ratio rank policy, rank summary, SciPy/SuperLU sparse direct covariance backend, optional SuiteSparseQR-style sparse QR covariance backend |
 | GradientProblemSolver | `gradient_problem_solver.h` | `ceres_torch.gradient_solver` | implemented | General unconstrained minimization with validation, reports, counters, line search, callback state visibility, manifold validation, and Ceres-style timing fields |
 | Callbacks/logging | `iteration_callback.h`, callbacks files | `ceres_torch.callbacks` | implemented | Iteration/evaluation callback behavior and summary visibility |
@@ -29,7 +29,7 @@ areas. Status values:
 | C API | `c_api.h` | Not cloned | planned exception | Python callable/module support replaces C ABI |
 | Examples/data | `examples`, `data` | `examples`, tests | partial | Port all tutorial examples and BAL/NIST/SLAM validations |
 | CUDA | CUDA internal files | PyTorch device + optional backends + `native/cuda` | partial | CUDA tensor smoke tests, PyTorch CUDA sparse/block-Schur backend tests, opt-in native extension build/load test |
-| Performance benchmarks | internal benchmark/test matrix | `ceres_torch.benchmarking`, `benchmarks` | partial | Opt-in dense, Schur, iterative, covariance, solver, and CUDA benchmark gates |
+| Performance benchmarks | internal benchmark/test matrix | `ceres_torch.benchmarking`, `benchmarks` | partial | Opt-in dense, dense/iterative Schur, iterative, sparse-direct, covariance, solver, and CUDA benchmark gates |
 
 ## Full-Parity Backlog
 

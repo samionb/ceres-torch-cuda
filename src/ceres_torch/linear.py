@@ -29,10 +29,23 @@ class NormalEquationPreconditioner:
     block_sizes: tuple[int, ...] = ()
     diagonal_inverse: Optional[torch.Tensor] = None
     block_factors: Optional[list[tuple[slice, torch.Tensor, bool]]] = None
+    power_series_matrix: Optional[torch.Tensor] = None
+    base_preconditioner: Optional["NormalEquationPreconditioner"] = None
+    max_power_series_iterations: int = 0
+    power_series_tolerance: float = 0.0
 
     def apply(self, residual: torch.Tensor) -> torch.Tensor:
         if self.preconditioner_type is PreconditionerType.IDENTITY:
             return residual
+        if self.power_series_matrix is not None and self.base_preconditioner is not None:
+            result = self.base_preconditioner.apply(residual)
+            term = result
+            for _ in range(max(0, self.max_power_series_iterations - 1)):
+                term = self.base_preconditioner.apply(self.power_series_matrix @ term)
+                if torch.linalg.norm(term) <= self.power_series_tolerance * torch.linalg.norm(result).clamp_min(1.0):
+                    break
+                result = result + term
+            return result
         if self.block_factors is not None:
             z = torch.zeros_like(residual)
             for block_slice, factor, is_cholesky in self.block_factors:
@@ -83,6 +96,8 @@ def solve_linear_system(
     block_sizes: Optional[Sequence[int]] = None,
     use_mixed_precision: bool = False,
     max_refinement_iterations: int = 0,
+    max_num_spse_iterations: int = 5,
+    spse_tolerance: float = 0.1,
 ) -> LinearSolverResult:
     if A.ndim != 2:
         raise ValueError("A must be a 2D matrix")
@@ -99,12 +114,9 @@ def solve_linear_system(
         x = b.new_zeros(A.shape[1])
         return LinearSolverResult(x, LinearSolverSummary(0.0, 0, True, "empty-row system"))
 
-    if solver_type is LinearSolverType.DENSE_SCHUR or (
-        solver_type is LinearSolverType.ITERATIVE_SCHUR and num_eliminate > 0
-    ):
-        backend_name = "iterative_schur" if solver_type is LinearSolverType.ITERATIVE_SCHUR else "dense_schur"
+    if solver_type is LinearSolverType.DENSE_SCHUR:
         backend_result = _try_optional_linear_backend(
-            backend_name,
+            "dense_schur",
             A,
             b,
             damping=damping,
@@ -133,6 +145,41 @@ def solve_linear_system(
             max_refinement_iterations=max_refinement_iterations if use_mixed_precision else 0,
         )
         return _summarize_solution(A, b, x, 1, "dense schur")
+
+    if solver_type is LinearSolverType.ITERATIVE_SCHUR and num_eliminate > 0:
+        backend_result = _try_optional_linear_backend(
+            "iterative_schur",
+            A,
+            b,
+            damping=damping,
+            num_eliminate=num_eliminate,
+            solver_type=solver_type,
+            block_sizes=block_sizes,
+        )
+        if backend_result is None:
+            backend_result = _try_optional_linear_backend(
+                "block_schur",
+                A,
+                b,
+                damping=damping,
+                num_eliminate=num_eliminate,
+                solver_type=solver_type,
+                block_sizes=block_sizes,
+            )
+        if backend_result is not None:
+            return backend_result
+        return iterative_schur_solve(
+            A,
+            b,
+            num_eliminate,
+            damping=damping,
+            max_iterations=max_iterations,
+            tolerance=tolerance,
+            preconditioner_type=preconditioner_type,
+            block_sizes=block_sizes,
+            max_num_spse_iterations=max_num_spse_iterations,
+            spse_tolerance=spse_tolerance,
+        )
 
     if solver_type in {LinearSolverType.CGNR, LinearSolverType.ITERATIVE_SCHUR}:
         return conjugate_gradient_normal_equations(
@@ -292,33 +339,70 @@ def build_normal_equation_preconditioner(
 
     diag = damping.reshape(-1) if damping is not None else torch.zeros(A.shape[1], dtype=A.dtype, device=A.device)
     normalized_block_sizes = _normalize_block_sizes(block_sizes, A.shape[1])
+    H = A.T @ A + torch.diag(diag)
     if _uses_block_preconditioner(preconditioner_type) and any(size > 1 for size in normalized_block_sizes):
-        H = A.T @ A + torch.diag(diag)
-        block_factors: list[tuple[slice, torch.Tensor, bool]] = []
-        offset = 0
-        for size in normalized_block_sizes:
-            block_slice = slice(offset, offset + size)
-            block = H[block_slice, block_slice]
-            try:
-                factor = torch.linalg.cholesky(block)
-                is_cholesky = True
-            except RuntimeError:
-                factor = block
-                is_cholesky = False
-            block_factors.append((block_slice, factor, is_cholesky))
-            offset += size
-        return NormalEquationPreconditioner(
-            preconditioner_type,
-            f"block_jacobi/{preconditioner_type.value}",
-            normalized_block_sizes,
-            block_factors=block_factors,
+        return _build_matrix_preconditioner(
+            H,
+            preconditioner_type=preconditioner_type,
+            block_sizes=normalized_block_sizes,
+            message_prefix="block_jacobi",
         )
 
-    diagonal = torch.sum(A * A, dim=0) + diag
-    diagonal_inverse = 1.0 / torch.clamp(diagonal, min=torch.finfo(A.dtype).eps)
+    diagonal = torch.diagonal(H)
+    diagonal_inverse = 1.0 / torch.clamp(diagonal, min=torch.finfo(H.dtype).eps)
     return NormalEquationPreconditioner(
         preconditioner_type,
         f"diagonal/{preconditioner_type.value}",
+        diagonal_inverse=diagonal_inverse,
+    )
+
+
+def build_schur_complement_preconditioner(
+    A: torch.Tensor,
+    *,
+    damping: Optional[torch.Tensor] = None,
+    num_eliminate: int,
+    preconditioner_type: PreconditionerType = PreconditionerType.JACOBI,
+    block_sizes: Optional[Sequence[int]] = None,
+    max_num_spse_iterations: int = 5,
+    spse_tolerance: float = 0.1,
+) -> NormalEquationPreconditioner:
+    if A.ndim != 2:
+        raise ValueError("A must be a 2D matrix")
+    if num_eliminate <= 0 or num_eliminate >= A.shape[1]:
+        raise ValueError("num_eliminate must split eliminated and retained Schur columns")
+    system = _build_schur_complement_system(A, damping=damping, num_eliminate=num_eliminate, b=None)
+    retained_block_sizes = _remaining_block_sizes_after_elimination(block_sizes, num_eliminate, A.shape[1])
+    if preconditioner_type is PreconditionerType.IDENTITY:
+        return NormalEquationPreconditioner(preconditioner_type, "schur_identity")
+    if preconditioner_type is PreconditionerType.SCHUR_POWER_SERIES_EXPANSION:
+        base = _build_matrix_preconditioner(
+            system.Hbb,
+            preconditioner_type=PreconditionerType.SCHUR_JACOBI,
+            block_sizes=retained_block_sizes,
+            message_prefix="schur_power_series_base",
+        )
+        return NormalEquationPreconditioner(
+            preconditioner_type,
+            f"schur_power_series/{max_num_spse_iterations}",
+            block_sizes=retained_block_sizes,
+            power_series_matrix=system.schur_eliminated_term,
+            base_preconditioner=base,
+            max_power_series_iterations=max_num_spse_iterations,
+            power_series_tolerance=spse_tolerance,
+        )
+    if _uses_block_preconditioner(preconditioner_type) and any(size > 1 for size in retained_block_sizes):
+        return _build_matrix_preconditioner(
+            system.S,
+            preconditioner_type=preconditioner_type,
+            block_sizes=retained_block_sizes,
+            message_prefix="schur_block_jacobi",
+        )
+    diagonal_inverse = 1.0 / torch.clamp(torch.diagonal(system.S), min=torch.finfo(A.dtype).eps)
+    return NormalEquationPreconditioner(
+        preconditioner_type,
+        f"schur_diagonal/{preconditioner_type.value}",
+        block_sizes=retained_block_sizes,
         diagonal_inverse=diagonal_inverse,
     )
 
@@ -395,6 +479,215 @@ def schur_solve_dense(
     xb = _solve_square_system(S, rhs_b)
     xa = Haa_inv_ga - Haa_inv_Hab @ xb
     return torch.cat([xa, xb])
+
+
+def iterative_schur_solve(
+    A: torch.Tensor,
+    b: torch.Tensor,
+    num_eliminate: int,
+    *,
+    damping: Optional[torch.Tensor] = None,
+    max_iterations: int = 500,
+    tolerance: float = 1e-10,
+    preconditioner_type: PreconditionerType = PreconditionerType.JACOBI,
+    block_sizes: Optional[Sequence[int]] = None,
+    max_num_spse_iterations: int = 5,
+    spse_tolerance: float = 0.1,
+) -> LinearSolverResult:
+    if num_eliminate <= 0 or num_eliminate >= A.shape[1]:
+        return conjugate_gradient_normal_equations(
+            A,
+            b,
+            damping=damping,
+            max_iterations=max_iterations,
+            tolerance=tolerance,
+            preconditioner_type=preconditioner_type,
+            block_sizes=block_sizes,
+        )
+    system = _build_schur_complement_system(A, damping=damping, num_eliminate=num_eliminate, b=b)
+    assert system.schur_rhs is not None and system.ga is not None
+    preconditioner = build_schur_complement_preconditioner(
+        A,
+        damping=damping,
+        num_eliminate=num_eliminate,
+        preconditioner_type=preconditioner_type,
+        block_sizes=block_sizes,
+        max_num_spse_iterations=max_num_spse_iterations,
+        spse_tolerance=spse_tolerance,
+    )
+    xb, iterations, success = _preconditioned_conjugate_gradient(
+        system.S,
+        system.schur_rhs,
+        preconditioner,
+        max_iterations=max_iterations,
+        tolerance=tolerance,
+    )
+    xa = system.Haa_inv_ga - system.Haa_inv_Hab @ xb
+    x = torch.cat([xa, xb])
+    result = _summarize_solution(
+        A,
+        b,
+        x,
+        iterations,
+        f"iterative schur {preconditioner.message}",
+        success=success,
+    )
+    return result
+
+
+@dataclass
+class _SchurComplementSystem:
+    Haa: torch.Tensor
+    Hab: torch.Tensor
+    Hba: torch.Tensor
+    Hbb: torch.Tensor
+    S: torch.Tensor
+    Haa_inv_Hab: torch.Tensor
+    Haa_inv_ga: torch.Tensor
+    schur_eliminated_term: torch.Tensor
+    ga: Optional[torch.Tensor] = None
+    gb: Optional[torch.Tensor] = None
+    schur_rhs: Optional[torch.Tensor] = None
+
+
+def _build_schur_complement_system(
+    A: torch.Tensor,
+    *,
+    damping: Optional[torch.Tensor],
+    num_eliminate: int,
+    b: Optional[torch.Tensor],
+) -> _SchurComplementSystem:
+    H = A.T @ A
+    if damping is not None:
+        H = H + torch.diag(damping.reshape(-1))
+    Haa = H[:num_eliminate, :num_eliminate]
+    Hab = H[:num_eliminate, num_eliminate:]
+    Hba = H[num_eliminate:, :num_eliminate]
+    Hbb = H[num_eliminate:, num_eliminate:]
+    Haa_inv_Hab = _solve_square_system(Haa, Hab)
+    schur_eliminated_term = Hba @ Haa_inv_Hab
+    S = Hbb - schur_eliminated_term
+    if b is None:
+        return _SchurComplementSystem(
+            Haa=Haa,
+            Hab=Hab,
+            Hba=Hba,
+            Hbb=Hbb,
+            S=S,
+            Haa_inv_Hab=Haa_inv_Hab,
+            Haa_inv_ga=Haa.new_zeros(num_eliminate),
+            schur_eliminated_term=schur_eliminated_term,
+        )
+    rhs = A.T @ b.reshape(-1)
+    ga = rhs[:num_eliminate]
+    gb = rhs[num_eliminate:]
+    Haa_inv_ga = _solve_square_system(Haa, ga)
+    schur_rhs = gb - Hba @ Haa_inv_ga
+    return _SchurComplementSystem(
+        Haa=Haa,
+        Hab=Hab,
+        Hba=Hba,
+        Hbb=Hbb,
+        S=S,
+        Haa_inv_Hab=Haa_inv_Hab,
+        Haa_inv_ga=Haa_inv_ga,
+        schur_eliminated_term=schur_eliminated_term,
+        ga=ga,
+        gb=gb,
+        schur_rhs=schur_rhs,
+    )
+
+
+def _build_matrix_preconditioner(
+    matrix: torch.Tensor,
+    *,
+    preconditioner_type: PreconditionerType,
+    block_sizes: Sequence[int],
+    message_prefix: str,
+) -> NormalEquationPreconditioner:
+    normalized_block_sizes = _normalize_block_sizes(block_sizes, matrix.shape[0])
+    block_factors: list[tuple[slice, torch.Tensor, bool]] = []
+    offset = 0
+    for size in normalized_block_sizes:
+        block_slice = slice(offset, offset + size)
+        block = matrix[block_slice, block_slice]
+        try:
+            factor = torch.linalg.cholesky(block)
+            is_cholesky = True
+        except RuntimeError:
+            factor = block
+            is_cholesky = False
+        block_factors.append((block_slice, factor, is_cholesky))
+        offset += size
+    return NormalEquationPreconditioner(
+        preconditioner_type,
+        f"{message_prefix}/{preconditioner_type.value}",
+        normalized_block_sizes,
+        block_factors=block_factors,
+    )
+
+
+def _preconditioned_conjugate_gradient(
+    matrix: torch.Tensor,
+    rhs: torch.Tensor,
+    preconditioner: NormalEquationPreconditioner,
+    *,
+    max_iterations: int,
+    tolerance: float,
+) -> tuple[torch.Tensor, int, bool]:
+    x = torch.zeros_like(rhs.reshape(-1))
+    r = rhs.reshape(-1) - matrix @ x
+    z = preconditioner.apply(r)
+    p = z.clone()
+    rz_old = torch.dot(r, z)
+    rhs_norm = torch.linalg.norm(rhs).clamp_min(torch.finfo(rhs.dtype).eps)
+    if torch.linalg.norm(r) <= tolerance * rhs_norm:
+        return x, 0, True
+    iterations = 0
+    success = False
+    for k in range(max_iterations):
+        Ap = matrix @ p
+        denom = torch.dot(p, Ap)
+        if torch.abs(denom) <= torch.finfo(matrix.dtype).eps:
+            break
+        alpha = rz_old / denom
+        x = x + alpha * p
+        r = r - alpha * Ap
+        iterations = k + 1
+        if torch.linalg.norm(r) <= tolerance * rhs_norm:
+            success = True
+            break
+        z = preconditioner.apply(r)
+        rz_new = torch.dot(r, z)
+        if torch.abs(rz_old) <= torch.finfo(matrix.dtype).eps:
+            break
+        beta = rz_new / rz_old
+        p = z + beta * p
+        rz_old = rz_new
+    return x, iterations, success
+
+
+def _remaining_block_sizes_after_elimination(
+    block_sizes: Optional[Sequence[int]],
+    num_eliminate: int,
+    num_columns: int,
+) -> tuple[int, ...]:
+    normalized = _normalize_block_sizes(block_sizes, num_columns)
+    remaining: list[int] = []
+    offset = 0
+    for size in normalized:
+        next_offset = offset + size
+        if next_offset <= num_eliminate:
+            offset = next_offset
+            continue
+        if offset < num_eliminate < next_offset:
+            remaining.append(next_offset - num_eliminate)
+        else:
+            remaining.append(size)
+        offset = next_offset
+    if not remaining:
+        raise ValueError("num_eliminate leaves no retained Schur columns")
+    return tuple(remaining)
 
 
 def _uses_block_preconditioner(preconditioner_type: PreconditionerType) -> bool:

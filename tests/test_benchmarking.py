@@ -30,6 +30,13 @@ def test_sparse_direct_benchmark_smoke() -> None:
     assert result.metric < 1e-8
 
 
+def test_iterative_schur_benchmark_smoke() -> None:
+    result = tc.iterative_schur_benchmark(rows=36, eliminate=6, remain=4, warmup=0, repeats=1)
+
+    assert result.name.startswith("schur/iterative/")
+    assert result.metric < 1e-8
+
+
 @pytest.mark.performance
 @pytest.mark.skipif(not RUN_BENCHMARKS, reason="Set CERES_TORCH_RUN_BENCHMARKS=1 to run performance gates")
 def test_cpu_default_benchmark_suite_performance_gate() -> None:

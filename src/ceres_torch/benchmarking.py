@@ -13,7 +13,7 @@ from .linear import solve_linear_system
 from .problem import Problem
 from .solver import solve
 from .sparse_backends import native_sparse_backends_available, register_native_sparse_backends, unregister_native_sparse_backends
-from .types import LinearSolverType, SolverOptions
+from .types import LinearSolverType, PreconditionerType, SolverOptions
 
 
 @dataclass(frozen=True)
@@ -119,6 +119,45 @@ def schur_benchmark(
 
     return time_callable(
         f"schur/dense/{rows}x{cols}/elim{eliminate}",
+        run,
+        device=device,
+        dtype=dtype,
+        warmup=warmup,
+        repeats=repeats,
+    )
+
+
+def iterative_schur_benchmark(
+    *,
+    rows: int = 240,
+    eliminate: int = 36,
+    remain: int = 18,
+    device: torch.device | str = "cpu",
+    dtype: torch.dtype = torch.float64,
+    warmup: int = 1,
+    repeats: int = 5,
+) -> BenchmarkResult:
+    generator = torch.Generator(device="cpu").manual_seed(13)
+    cols = eliminate + remain
+    A = _randn((rows, cols), generator=generator, dtype=dtype, device=device)
+    x_true = _randn((cols,), generator=generator, dtype=dtype, device=device)
+    b = A @ x_true
+
+    def run() -> torch.Tensor:
+        result = solve_linear_system(
+            A,
+            b,
+            solver_type=LinearSolverType.ITERATIVE_SCHUR,
+            num_eliminate=eliminate,
+            preconditioner_type=PreconditionerType.SCHUR_JACOBI,
+            block_sizes=[eliminate, remain],
+            tolerance=1e-12,
+            max_iterations=max(20, remain * 4),
+        )
+        return torch.linalg.norm(A @ result.x - b)
+
+    return time_callable(
+        f"schur/iterative/{rows}x{cols}/elim{eliminate}",
         run,
         device=device,
         dtype=dtype,

@@ -141,6 +141,8 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
                 block_sizes=[block.tangent_size for block in active_blocks],
                 use_mixed_precision=options.use_mixed_precision_solves,
                 max_refinement_iterations=options.max_num_refinement_iterations,
+                max_num_spse_iterations=options.max_num_spse_iterations,
+                spse_tolerance=options.spse_tolerance,
             )
             linear_time = time.perf_counter() - linear_start
             step = linear_result.x

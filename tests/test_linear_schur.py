@@ -110,6 +110,87 @@ def test_dense_schur_matches_damped_dense_qr_solution() -> None:
     torch.testing.assert_close(schur.x, dense.x, atol=1e-10, rtol=1e-10)
 
 
+def test_iterative_schur_matches_dense_schur_solution() -> None:
+    A = torch.tensor(
+        [
+            [2.0, 0.0, 1.0, 0.0],
+            [0.0, 3.0, 0.0, 1.0],
+            [1.0, -1.0, 2.0, 1.0],
+            [0.0, 1.0, -1.0, 2.0],
+            [1.0, 2.0, 0.0, -1.0],
+            [3.0, 0.0, 1.0, 1.0],
+        ],
+        dtype=torch.float64,
+    )
+    b = torch.tensor([1.0, -2.0, 0.5, 3.0, -1.0, 2.0], dtype=torch.float64)
+    damping = torch.tensor([0.1, 0.2, 0.3, 0.4], dtype=torch.float64)
+
+    dense = tc.solve_linear_system(
+        A,
+        b,
+        solver_type=tc.LinearSolverType.DENSE_SCHUR,
+        damping=damping,
+        num_eliminate=2,
+    )
+    iterative = tc.solve_linear_system(
+        A,
+        b,
+        solver_type=tc.LinearSolverType.ITERATIVE_SCHUR,
+        damping=damping,
+        num_eliminate=2,
+        preconditioner_type=tc.PreconditionerType.SCHUR_JACOBI,
+        block_sizes=[1, 1, 2],
+        max_iterations=20,
+        tolerance=1e-14,
+    )
+
+    assert iterative.summary.success
+    assert iterative.summary.num_iterations > 0
+    assert iterative.summary.message.startswith("iterative schur")
+    torch.testing.assert_close(iterative.x, dense.x, atol=1e-10, rtol=1e-10)
+
+
+def test_schur_power_series_preconditioner_applies_truncated_series() -> None:
+    A = torch.tensor(
+        [
+            [3.0, 0.0, 1.0, 0.0],
+            [0.0, 2.0, 0.0, 1.0],
+            [1.0, 1.0, 2.0, -1.0],
+            [0.5, -1.0, 1.0, 2.0],
+            [2.0, 0.0, -1.0, 1.0],
+        ],
+        dtype=torch.float64,
+    )
+    residual = torch.tensor([0.7, -1.2], dtype=torch.float64)
+    damping = torch.tensor([0.2, 0.3, 0.4, 0.5], dtype=torch.float64)
+    preconditioner = tc.build_schur_complement_preconditioner(
+        A,
+        damping=damping,
+        num_eliminate=2,
+        preconditioner_type=tc.PreconditionerType.SCHUR_POWER_SERIES_EXPANSION,
+        block_sizes=[1, 1, 2],
+        max_num_spse_iterations=3,
+        spse_tolerance=0.0,
+    )
+
+    H = A.T @ A + torch.diag(damping)
+    Haa = H[:2, :2]
+    Hab = H[:2, 2:]
+    Hba = H[2:, :2]
+    Hbb = H[2:, 2:]
+    eliminated = Hba @ torch.linalg.solve(Haa, Hab)
+    Hbb_inv = torch.linalg.inv(Hbb)
+    expected = Hbb_inv @ residual
+    term = expected
+    for _ in range(2):
+        term = Hbb_inv @ (eliminated @ term)
+        expected = expected + term
+
+    assert preconditioner.message == "schur_power_series/3"
+    assert preconditioner.block_sizes == (2,)
+    torch.testing.assert_close(preconditioner.apply(residual), expected, atol=1e-10, rtol=1e-10)
+
+
 def test_block_jacobi_preconditioner_applies_exact_normal_blocks() -> None:
     A = torch.tensor(
         [
