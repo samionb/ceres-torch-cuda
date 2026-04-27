@@ -70,6 +70,7 @@ from .linear import (
     build_schur_complement_preconditioner,
     build_normal_equation_preconditioner,
     clear_optional_backends,
+    dogleg_step,
     get_optional_backend,
     iterative_schur_solve,
     register_optional_backend,

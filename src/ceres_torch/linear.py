@@ -5,7 +5,7 @@ from typing import Any, Callable, Optional, Sequence
 
 import torch
 
-from .types import LinearSolverType, PreconditionerType
+from .types import DoglegType, LinearSolverType, PreconditionerType
 
 
 @dataclass
@@ -422,19 +422,27 @@ def jacobi_damping_from_jacobian(
     return diag / max(radius, torch.finfo(J.dtype).eps)
 
 
-def dogleg_step(J: torch.Tensor, r: torch.Tensor, radius: float) -> torch.Tensor:
+def dogleg_step(
+    J: torch.Tensor,
+    r: torch.Tensor,
+    radius: float,
+    *,
+    dogleg_type: DoglegType = DoglegType.TRADITIONAL_DOGLEG,
+) -> torch.Tensor:
+    if radius <= 0.0 or J.shape[1] == 0:
+        return J.new_zeros(J.shape[1])
+    if dogleg_type is DoglegType.SUBSPACE_DOGLEG:
+        return _subspace_dogleg_step(J, r, radius)
+    return _traditional_dogleg_step(J, r, radius)
+
+
+def _traditional_dogleg_step(J: torch.Tensor, r: torch.Tensor, radius: float) -> torch.Tensor:
     g = J.T @ r
     H = J.T @ J
-    try:
-        gn = torch.linalg.solve(H, -g)
-    except RuntimeError:
-        gn = torch.linalg.lstsq(H, -g).solution
+    gn = _solve_square_system(H, -g)
     if torch.linalg.norm(gn) <= radius:
         return gn
-    Jg = J @ g
-    denom = torch.dot(Jg, Jg).clamp_min(torch.finfo(J.dtype).eps)
-    alpha = torch.dot(g, g) / denom
-    sd = -alpha * g
+    sd = _steepest_descent_step(J, g)
     sd_norm = torch.linalg.norm(sd)
     if sd_norm >= radius:
         return (radius / sd_norm.clamp_min(torch.finfo(J.dtype).eps)) * sd
@@ -444,6 +452,87 @@ def dogleg_step(J: torch.Tensor, r: torch.Tensor, radius: float) -> torch.Tensor
     c = torch.dot(sd, sd) - radius * radius
     tau = (-b + torch.sqrt(torch.clamp(b * b - 4.0 * a * c, min=0.0))) / (2.0 * a).clamp_min(torch.finfo(J.dtype).eps)
     return sd + tau * diff
+
+
+def _subspace_dogleg_step(J: torch.Tensor, r: torch.Tensor, radius: float) -> torch.Tensor:
+    g = J.T @ r
+    H = J.T @ J
+    gn = _solve_square_system(H, -g)
+    if torch.linalg.norm(gn) <= radius:
+        return gn
+    sd = _steepest_descent_step(J, g)
+    sd_norm = torch.linalg.norm(sd)
+    if sd_norm >= radius:
+        return (radius / sd_norm.clamp_min(torch.finfo(J.dtype).eps)) * sd
+
+    basis = _orthonormal_basis((-g, gn))
+    if basis.shape[1] == 0:
+        return J.new_zeros(J.shape[1])
+    if basis.shape[1] < 2:
+        return _traditional_dogleg_step(J, r, radius)
+
+    reduced_jacobian = J @ basis
+    reduced_hessian = reduced_jacobian.T @ reduced_jacobian
+    reduced_gradient = reduced_jacobian.T @ r.reshape(-1)
+    reduced_step = _trust_region_boundary_step(reduced_hessian, reduced_gradient, radius)
+    return basis @ reduced_step
+
+
+def _steepest_descent_step(J: torch.Tensor, g: torch.Tensor) -> torch.Tensor:
+    Jg = J @ g
+    eps = torch.finfo(J.dtype).eps
+    denom = torch.dot(Jg, Jg).clamp_min(eps)
+    alpha = torch.dot(g, g) / denom
+    return -alpha * g
+
+
+def _orthonormal_basis(vectors: Sequence[torch.Tensor]) -> torch.Tensor:
+    basis: list[torch.Tensor] = []
+    for vector in vectors:
+        candidate = vector.reshape(-1).clone()
+        candidate_norm = torch.linalg.norm(candidate)
+        for q in basis:
+            candidate = candidate - torch.dot(q, candidate) * q
+        norm = torch.linalg.norm(candidate)
+        threshold = 100.0 * torch.finfo(candidate.dtype).eps * max(float(candidate_norm.detach().cpu()), 1.0)
+        if float(norm.detach().cpu()) > threshold:
+            basis.append(candidate / norm)
+    if not basis:
+        first = next(iter(vectors))
+        return first.new_zeros((first.numel(), 0))
+    return torch.stack(basis, dim=1)
+
+
+def _trust_region_boundary_step(H: torch.Tensor, g: torch.Tensor, radius: float) -> torch.Tensor:
+    unconstrained = _solve_square_system(H, -g)
+    if torch.linalg.norm(unconstrained) <= radius:
+        return unconstrained
+    eye = torch.eye(H.shape[0], dtype=H.dtype, device=H.device)
+    radius_value = max(float(radius), float(torch.finfo(H.dtype).tiny))
+
+    def solve_shifted(shift: float) -> torch.Tensor:
+        return _solve_square_system(H + shift * eye, -g)
+
+    low = 0.0
+    high = 1.0
+    y = solve_shifted(high)
+    for _ in range(80):
+        if float(torch.linalg.norm(y).detach().cpu()) <= radius_value:
+            break
+        high *= 2.0
+        y = solve_shifted(high)
+    for _ in range(80):
+        mid = 0.5 * (low + high)
+        y = solve_shifted(mid)
+        if float(torch.linalg.norm(y).detach().cpu()) > radius_value:
+            low = mid
+        else:
+            high = mid
+    y = solve_shifted(high)
+    y_norm = torch.linalg.norm(y)
+    if float(y_norm.detach().cpu()) > radius_value:
+        return (radius / y_norm.clamp_min(torch.finfo(H.dtype).eps)) * y
+    return y
 
 
 def schur_solve_dense(

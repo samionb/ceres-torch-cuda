@@ -82,6 +82,30 @@ def test_dense_linear_solver_validates_shapes_and_zero_column_systems() -> None:
         tc.solve_linear_system(torch.eye(2, dtype=torch.float64), b)
 
 
+def test_subspace_dogleg_solves_reduced_model_no_worse_than_traditional() -> None:
+    J = torch.tensor(
+        [
+            [1.0, 0.2],
+            [0.3, 1.7],
+            [2.0, -0.5],
+            [-0.4, 1.2],
+        ],
+        dtype=torch.float64,
+    )
+    r = torch.tensor([1.0, -2.0, 0.5, 1.5], dtype=torch.float64)
+    radius = 0.35
+
+    traditional = tc.dogleg_step(J, r, radius, dogleg_type=tc.DoglegType.TRADITIONAL_DOGLEG)
+    subspace = tc.dogleg_step(J, r, radius, dogleg_type=tc.DoglegType.SUBSPACE_DOGLEG)
+
+    def model_cost(step: torch.Tensor) -> torch.Tensor:
+        linearized = r + J @ step
+        return 0.5 * torch.dot(linearized, linearized)
+
+    assert torch.linalg.norm(subspace) <= radius + 1e-12
+    assert model_cost(subspace) <= model_cost(traditional) + 1e-12
+
+
 def test_dense_schur_matches_damped_dense_qr_solution() -> None:
     A = torch.tensor(
         [

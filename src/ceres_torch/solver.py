@@ -117,7 +117,7 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
 
         if options.trust_region_strategy_type is TrustRegionStrategyType.DOGLEG:
             linear_start = time.perf_counter()
-            step = dogleg_step(J, r, radius)
+            step = dogleg_step(J, r, radius, dogleg_type=options.dogleg_type)
             linear_iterations = 1
             linear_time = time.perf_counter() - linear_start
         else:

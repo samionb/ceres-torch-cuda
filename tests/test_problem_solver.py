@@ -385,6 +385,40 @@ def test_trust_region_radius_expands_after_high_quality_steps() -> None:
     assert summary.iterations[1].step_solver_time_in_seconds >= 0.0
 
 
+def test_dogleg_solver_honors_subspace_dogleg_option() -> None:
+    x = torch.tensor([0.5], dtype=torch.float64)
+    y = torch.tensor([-1.0], dtype=torch.float64)
+    problem = tc.Problem()
+    problem.AddResidualBlock(
+        tc.AutoDiffCostFunction(
+            lambda x, y: torch.stack([x[0] + 2.0 * y[0] - 1.0, 3.0 * x[0] - y[0] - 2.0]),
+            [1, 1],
+            2,
+        ),
+        None,
+        [x, y],
+    )
+
+    summary = tc.solve(
+        tc.SolverOptions(
+            trust_region_strategy_type=tc.TrustRegionStrategyType.DOGLEG,
+            dogleg_type=tc.DoglegType.SUBSPACE_DOGLEG,
+            max_num_iterations=10,
+            initial_trust_region_radius=0.25,
+            gradient_tolerance=1e-12,
+        ),
+        problem,
+    )
+
+    assert summary.IsSolutionUsable()
+    assert summary.trust_region_strategy_type is tc.TrustRegionStrategyType.DOGLEG
+    assert summary.dogleg_type is tc.DoglegType.SUBSPACE_DOGLEG
+    assert summary.linear_solver_type_used is tc.LinearSolverType.DENSE_QR
+    assert summary.num_successful_steps > 0
+    torch.testing.assert_close(x, torch.tensor([5.0 / 7.0], dtype=torch.float64), atol=1e-6, rtol=1e-6)
+    torch.testing.assert_close(y, torch.tensor([1.0 / 7.0], dtype=torch.float64), atol=1e-6, rtol=1e-6)
+
+
 def test_solver_reports_detailed_timing_counters() -> None:
     x = torch.tensor([0.5], dtype=torch.float64)
     problem = tc.Problem()
