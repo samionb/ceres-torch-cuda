@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 import torch
 
+from .costs import GradientChecker
 from .linear import dogleg_step, jacobi_damping_from_jacobian, solve_linear_system
 from .line_search import next_line_search_step_size
 from .problem import EvaluateOptions, ParameterBlock, Problem
@@ -36,6 +37,14 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
     preprocessor_start = start
     summary = _new_summary(options, problem)
     active_blocks = _linear_solver_parameter_order(problem)
+    summary.fixed_cost = _fixed_cost(problem)
+    gradient_check_failure = _gradient_check_failure(options, problem)
+    if gradient_check_failure is not None:
+        summary.termination_type = TerminationType.FAILURE
+        summary.message = gradient_check_failure
+        summary.preprocessor_time_in_seconds = time.perf_counter() - preprocessor_start
+        summary.total_time_in_seconds = time.perf_counter() - start
+        return summary
     num_eliminate = _num_eliminate_for_schur(active_blocks, _effective_linear_solver(options.linear_solver_type))
     lm_radius = _LevenbergMarquardtRadiusState(options.initial_trust_region_radius, options.max_trust_region_radius)
     radius = lm_radius.radius
@@ -345,6 +354,14 @@ def _line_search_solve(options: SolverOptions, problem: Problem) -> SolverSummar
     preprocessor_start = start
     summary = _new_summary(options, problem)
     active_blocks = _linear_solver_parameter_order(problem)
+    summary.fixed_cost = _fixed_cost(problem)
+    gradient_check_failure = _gradient_check_failure(options, problem)
+    if gradient_check_failure is not None:
+        summary.termination_type = TerminationType.FAILURE
+        summary.message = gradient_check_failure
+        summary.preprocessor_time_in_seconds = time.perf_counter() - preprocessor_start
+        summary.total_time_in_seconds = time.perf_counter() - start
+        return summary
     summary.preprocessor_time_in_seconds = time.perf_counter() - preprocessor_start
     minimizer_start = time.perf_counter()
     initial, initial_eval_time = _timed_evaluate(
@@ -407,23 +424,38 @@ def _line_search_solve(options: SolverOptions, problem: Problem) -> SolverSummar
             y_history,
             inverse_hessian,
         )
-        directional_derivative = torch.dot(g, direction)
         direction_restarts = 0
-        if directional_derivative >= 0:
+        if _has_bounds(active_blocks):
+            direction = _project_line_search_direction_for_bounds(direction, active_blocks)
+        directional_derivative = torch.dot(g, direction)
+        if torch.linalg.norm(direction) <= torch.finfo(direction.dtype).eps or directional_derivative >= 0:
             direction_restarts += 1
             direction = -g
-            directional_derivative = -torch.dot(g, g)
+            if _has_bounds(active_blocks):
+                direction = _project_line_search_direction_for_bounds(direction, active_blocks)
+            directional_derivative = torch.dot(g, direction)
             s_history.clear()
             y_history.clear()
             inverse_hessian = torch.eye(g.numel(), dtype=g.dtype, device=g.device)
+        if torch.linalg.norm(direction) <= torch.finfo(direction.dtype).eps or directional_derivative >= 0:
+            summary.termination_type = TerminationType.CONVERGENCE
+            summary.message = "Projected gradient tolerance reached."
+            summary.final_cost = cost
+            iter_summary.line_search_direction_restarts = direction_restarts
+            iter_summary.iteration_time_in_seconds = time.perf_counter() - iter_start
+            iter_summary.cumulative_time_in_seconds = time.perf_counter() - start
+            break
         accepted = False
         snapshot = problem.snapshot()
         accepted_direction = direction
         accepted_gradient: torch.Tensor | None = None
         directions = [direction]
         trial_evaluations = 0
-        if not torch.allclose(direction, -g):
-            directions.append(-g)
+        fallback_direction = -g
+        if _has_bounds(active_blocks):
+            fallback_direction = _project_line_search_direction_for_bounds(fallback_direction, active_blocks)
+        if torch.linalg.norm(fallback_direction) > torch.finfo(fallback_direction.dtype).eps and not torch.allclose(direction, fallback_direction):
+            directions.append(fallback_direction)
         line_search_start = time.perf_counter()
         for trial_index, trial_direction in enumerate(directions):
             if trial_index > 0:
@@ -576,6 +608,46 @@ def _timed_evaluate(
     eval_start = time.perf_counter()
     result = problem.evaluate(options, compute_jacobian=compute_jacobian)
     return result, time.perf_counter() - eval_start
+
+
+def _fixed_cost(problem: Problem) -> float:
+    fixed_residual_blocks = [
+        residual_block
+        for residual_block in problem.residual_blocks
+        if all(block.tangent_size == 0 for block in residual_block.parameter_blocks)
+    ]
+    if not fixed_residual_blocks:
+        return 0.0
+    evaluation = problem.evaluate(
+        EvaluateOptions(
+            parameter_blocks=[],
+            residual_blocks=fixed_residual_blocks,
+        ),
+        compute_jacobian=False,
+    )
+    return float(evaluation.cost.detach().cpu())
+
+
+def _gradient_check_failure(options: SolverOptions, problem: Problem) -> str | None:
+    if not options.check_gradients:
+        return None
+    checker = GradientChecker(
+        relative_precision=options.gradient_check_relative_precision,
+        relative_step_size=options.gradient_check_numeric_derivative_relative_step_size,
+    )
+    worst_error = 0.0
+    for index, residual_block in enumerate(problem.residual_blocks):
+        parameters = [block.tensor.detach().clone() for block in residual_block.parameter_blocks]
+        result = checker.probe(residual_block.cost_function, parameters)
+        worst_error = max(worst_error, float(result["max_relative_error"]))
+        if not bool(result["ok"]):
+            name = residual_block.name or f"#{index}"
+            return (
+                f"Gradient check failed for residual block {name}: "
+                f"max relative error {worst_error:.3e} exceeds "
+                f"{options.gradient_check_relative_precision:.3e}."
+            )
+    return None
 
 
 def _finalize_trust_region_summary(
@@ -761,6 +833,31 @@ def _rejected_trust_region_radius(
 
 def _has_bounds(blocks: list[ParameterBlock]) -> bool:
     return any(block.lower_bound is not None or block.upper_bound is not None for block in blocks)
+
+
+def _project_line_search_direction_for_bounds(
+    direction: torch.Tensor,
+    active_blocks: list[ParameterBlock],
+) -> torch.Tensor:
+    projected = direction.clone()
+    offset = 0
+    for block in active_blocks:
+        n = block.tangent_size
+        segment = projected[offset : offset + n]
+        offset += n
+        if n == 0 or n != block.size:
+            continue
+        value = block.tensor.detach().reshape(-1).to(dtype=segment.dtype, device=segment.device)
+        tolerance = 10.0 * torch.finfo(segment.dtype).eps * torch.maximum(torch.abs(value), torch.ones_like(value))
+        if block.lower_bound is not None:
+            lower = block.lower_bound.reshape(-1).to(dtype=segment.dtype, device=segment.device)
+            at_lower = value <= lower + tolerance
+            segment.copy_(torch.where(at_lower & (segment < 0), torch.zeros_like(segment), segment))
+        if block.upper_bound is not None:
+            upper = block.upper_bound.reshape(-1).to(dtype=segment.dtype, device=segment.device)
+            at_upper = value >= upper - tolerance
+            segment.copy_(torch.where(at_upper & (segment > 0), torch.zeros_like(segment), segment))
+    return projected
 
 
 def _projected_line_search_step(

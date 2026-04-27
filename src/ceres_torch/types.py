@@ -444,6 +444,7 @@ class SolverSummary:
                 f"Residuals: {self.num_residuals}",
                 f"Initial cost: {self.initial_cost:.12e}",
                 f"Final cost: {self.final_cost:.12e}",
+                f"Fixed cost: {self.fixed_cost:.12e}",
                 f"Successful steps: {self.num_successful_steps}",
                 f"Unsuccessful steps: {self.num_unsuccessful_steps}",
                 f"Linear solves: {self.num_linear_solves}",

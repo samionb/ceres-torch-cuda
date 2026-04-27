@@ -169,6 +169,55 @@ def test_solver_options_validate_ceres_style_cross_option_rules() -> None:
         ).validate()
 
 
+def test_solver_check_gradients_fails_before_minimization_for_bad_analytic_jacobian() -> None:
+    x = torch.tensor([2.0], dtype=torch.float64)
+    problem = tc.Problem()
+    problem.AddResidualBlock(
+        tc.AnalyticCostFunction(
+            lambda x: x * x,
+            lambda x: [torch.tensor([[3.0]], dtype=x.dtype, device=x.device)],
+            [1],
+            1,
+        ),
+        None,
+        [x],
+        name="bad_square",
+    )
+
+    summary = tc.solve(
+        tc.SolverOptions(
+            check_gradients=True,
+            gradient_check_relative_precision=1e-8,
+        ),
+        problem,
+    )
+
+    assert summary.termination_type is tc.TerminationType.FAILURE
+    assert "Gradient check failed" in summary.message
+    assert "bad_square" in summary.message
+    assert summary.iterations == []
+    torch.testing.assert_close(x, torch.tensor([2.0], dtype=torch.float64))
+
+
+def test_solver_reports_fixed_cost_from_fully_constant_residual_blocks() -> None:
+    x = torch.tensor([0.0], dtype=torch.float64)
+    fixed = torch.tensor([5.0], dtype=torch.float64)
+    problem = tc.Problem()
+    problem.AddParameterBlock(x)
+    problem.AddParameterBlock(fixed)
+    problem.SetParameterBlockConstant(fixed)
+    problem.AddResidualBlock(tc.AutoDiffCostFunction(lambda x: x - 2.0, [1]), None, [x])
+    problem.AddResidualBlock(tc.AutoDiffCostFunction(lambda fixed: fixed - 3.0, [1]), None, [fixed])
+
+    summary = tc.solve(tc.SolverOptions(max_num_iterations=10, gradient_tolerance=1e-12), problem)
+
+    assert summary.IsSolutionUsable()
+    assert summary.fixed_cost == pytest.approx(2.0)
+    assert summary.final_cost == pytest.approx(summary.fixed_cost)
+    assert "Fixed cost" in summary.FullReport()
+    torch.testing.assert_close(x, torch.tensor([2.0], dtype=torch.float64), atol=1e-6, rtol=1e-6)
+
+
 def test_gradient_problem_update_state_every_iteration_controls_callback_visibility() -> None:
     def run(update_state_every_iteration: bool) -> tuple[tc.GradientProblemSolverSummary, torch.Tensor, list[float]]:
         x = torch.tensor([0.0], dtype=torch.float64)
@@ -332,6 +381,33 @@ def test_solve_line_search_interpolation_modes_converge(interpolation_type: tc.L
     assert summary.IsSolutionUsable()
     assert summary.line_search_interpolation_type is interpolation_type
     torch.testing.assert_close(x, torch.tensor([1.0, 1.0], dtype=torch.float64), atol=1e-4, rtol=1e-4)
+
+
+def test_line_search_minimizer_converges_on_active_bound_projected_gradient() -> None:
+    x = torch.tensor([0.0], dtype=torch.float64)
+    problem = tc.Problem()
+    problem.AddParameterBlock(x)
+    problem.SetParameterLowerBound(x, 0, 0.0)
+    problem.AddResidualBlock(tc.AutoDiffCostFunction(lambda x: x + 1.0, [1]), None, [x])
+
+    summary = tc.solve(
+        tc.SolverOptions(
+            minimizer_type=tc.MinimizerType.LINE_SEARCH,
+            line_search_direction_type=tc.LineSearchDirectionType.STEEPEST_DESCENT,
+            line_search_type=tc.LineSearchType.ARMIJO,
+            max_num_iterations=5,
+            gradient_tolerance=0.0,
+            function_tolerance=0.0,
+            parameter_tolerance=0.0,
+        ),
+        problem,
+    )
+
+    assert summary.IsSolutionUsable()
+    assert summary.termination_type is tc.TerminationType.CONVERGENCE
+    assert summary.message == "Projected gradient tolerance reached."
+    assert summary.num_unsuccessful_steps == 0
+    torch.testing.assert_close(x, torch.tensor([0.0], dtype=torch.float64))
 
 
 def test_dense_schur_respects_parameter_ordering_groups() -> None:
