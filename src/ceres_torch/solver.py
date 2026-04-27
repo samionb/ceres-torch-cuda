@@ -135,6 +135,7 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
                 solver_type=_effective_linear_solver(options.linear_solver_type),
                 damping=damping,
                 num_eliminate=num_eliminate,
+                min_iterations=options.min_linear_solver_iterations,
                 max_iterations=options.max_linear_solver_iterations,
                 tolerance=options.eta,
                 preconditioner_type=options.preconditioner_type,
@@ -142,6 +143,7 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
                 use_mixed_precision=options.use_mixed_precision_solves,
                 max_refinement_iterations=options.max_num_refinement_iterations,
                 max_num_spse_iterations=options.max_num_spse_iterations,
+                use_spse_initialization=options.use_spse_initialization,
                 spse_tolerance=options.spse_tolerance,
             )
             linear_time = time.perf_counter() - linear_start

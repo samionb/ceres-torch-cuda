@@ -33,10 +33,16 @@ class NormalEquationPreconditioner:
     base_preconditioner: Optional["NormalEquationPreconditioner"] = None
     max_power_series_iterations: int = 0
     power_series_tolerance: float = 0.0
+    matrix_factor: Optional[torch.Tensor] = None
+    matrix_is_cholesky: bool = False
 
     def apply(self, residual: torch.Tensor) -> torch.Tensor:
         if self.preconditioner_type is PreconditionerType.IDENTITY:
             return residual
+        if self.matrix_factor is not None:
+            if self.matrix_is_cholesky:
+                return torch.cholesky_solve(residual.reshape(-1, 1), self.matrix_factor).reshape(-1)
+            return _solve_square_system(self.matrix_factor, residual)
         if self.power_series_matrix is not None and self.base_preconditioner is not None:
             result = self.base_preconditioner.apply(residual)
             term = result
@@ -90,6 +96,7 @@ def solve_linear_system(
     solver_type: LinearSolverType = LinearSolverType.DENSE_QR,
     damping: Optional[torch.Tensor] = None,
     num_eliminate: int = 0,
+    min_iterations: int = 0,
     max_iterations: int = 500,
     tolerance: float = 1e-10,
     preconditioner_type: PreconditionerType = PreconditionerType.JACOBI,
@@ -97,6 +104,7 @@ def solve_linear_system(
     use_mixed_precision: bool = False,
     max_refinement_iterations: int = 0,
     max_num_spse_iterations: int = 5,
+    use_spse_initialization: bool = False,
     spse_tolerance: float = 0.1,
 ) -> LinearSolverResult:
     if A.ndim != 2:
@@ -173,11 +181,13 @@ def solve_linear_system(
             b,
             num_eliminate,
             damping=damping,
+            min_iterations=min_iterations,
             max_iterations=max_iterations,
             tolerance=tolerance,
             preconditioner_type=preconditioner_type,
             block_sizes=block_sizes,
             max_num_spse_iterations=max_num_spse_iterations,
+            use_spse_initialization=use_spse_initialization,
             spse_tolerance=spse_tolerance,
         )
 
@@ -186,6 +196,7 @@ def solve_linear_system(
             A,
             b,
             damping=damping,
+            min_iterations=min_iterations,
             max_iterations=max_iterations,
             tolerance=tolerance,
             preconditioner_type=preconditioner_type,
@@ -288,6 +299,7 @@ def conjugate_gradient_normal_equations(
     tolerance: float,
     preconditioner_type: PreconditionerType,
     block_sizes: Optional[Sequence[int]] = None,
+    min_iterations: int = 0,
 ) -> LinearSolverResult:
     rhs = A.T @ b.reshape(-1)
     diag = damping.reshape(-1) if damping is not None else torch.zeros(A.shape[1], dtype=A.dtype, device=A.device)
@@ -307,6 +319,8 @@ def conjugate_gradient_normal_equations(
     p = z.clone()
     rz_old = torch.dot(r, z)
     b_norm = torch.linalg.norm(rhs).clamp_min(torch.finfo(A.dtype).eps)
+    if min_iterations <= 0 and torch.linalg.norm(r) <= tolerance * b_norm:
+        return _summarize_solution(A, b, x, 0, f"cgnr {preconditioner.message}", success=True)
     iterations = 0
     success = False
     for k in range(max_iterations):
@@ -316,7 +330,7 @@ def conjugate_gradient_normal_equations(
         x = x + alpha * p
         r = r - alpha * Ap
         iterations = k + 1
-        if torch.linalg.norm(r) <= tolerance * b_norm:
+        if iterations >= min_iterations and torch.linalg.norm(r) <= tolerance * b_norm:
             success = True
             break
         z = preconditioner.apply(r)
@@ -340,6 +354,13 @@ def build_normal_equation_preconditioner(
     diag = damping.reshape(-1) if damping is not None else torch.zeros(A.shape[1], dtype=A.dtype, device=A.device)
     normalized_block_sizes = _normalize_block_sizes(block_sizes, A.shape[1])
     H = A.T @ A + torch.diag(diag)
+    if preconditioner_type is PreconditionerType.CLUSTER_TRIDIAGONAL and len(normalized_block_sizes) > 1:
+        return _build_cluster_tridiagonal_preconditioner(
+            H,
+            preconditioner_type=preconditioner_type,
+            block_sizes=normalized_block_sizes,
+            message_prefix="cluster_tridiagonal",
+        )
     if _uses_block_preconditioner(preconditioner_type) and any(size > 1 for size in normalized_block_sizes):
         return _build_matrix_preconditioner(
             H,
@@ -390,6 +411,13 @@ def build_schur_complement_preconditioner(
             base_preconditioner=base,
             max_power_series_iterations=max_num_spse_iterations,
             power_series_tolerance=spse_tolerance,
+        )
+    if preconditioner_type is PreconditionerType.CLUSTER_TRIDIAGONAL and len(retained_block_sizes) > 1:
+        return _build_cluster_tridiagonal_preconditioner(
+            system.S,
+            preconditioner_type=preconditioner_type,
+            block_sizes=retained_block_sizes,
+            message_prefix="schur_cluster_tridiagonal",
         )
     if _uses_block_preconditioner(preconditioner_type) and any(size > 1 for size in retained_block_sizes):
         return _build_matrix_preconditioner(
@@ -576,11 +604,13 @@ def iterative_schur_solve(
     num_eliminate: int,
     *,
     damping: Optional[torch.Tensor] = None,
+    min_iterations: int = 0,
     max_iterations: int = 500,
     tolerance: float = 1e-10,
     preconditioner_type: PreconditionerType = PreconditionerType.JACOBI,
     block_sizes: Optional[Sequence[int]] = None,
     max_num_spse_iterations: int = 5,
+    use_spse_initialization: bool = False,
     spse_tolerance: float = 0.1,
 ) -> LinearSolverResult:
     if num_eliminate <= 0 or num_eliminate >= A.shape[1]:
@@ -588,6 +618,7 @@ def iterative_schur_solve(
             A,
             b,
             damping=damping,
+            min_iterations=min_iterations,
             max_iterations=max_iterations,
             tolerance=tolerance,
             preconditioner_type=preconditioner_type,
@@ -604,10 +635,26 @@ def iterative_schur_solve(
         max_num_spse_iterations=max_num_spse_iterations,
         spse_tolerance=spse_tolerance,
     )
+    initial_x: torch.Tensor | None = None
+    message_suffix = ""
+    if use_spse_initialization:
+        spse = build_schur_complement_preconditioner(
+            A,
+            damping=damping,
+            num_eliminate=num_eliminate,
+            preconditioner_type=PreconditionerType.SCHUR_POWER_SERIES_EXPANSION,
+            block_sizes=block_sizes,
+            max_num_spse_iterations=max_num_spse_iterations,
+            spse_tolerance=spse_tolerance,
+        )
+        initial_x = spse.apply(system.schur_rhs)
+        message_suffix = f" spse_init/{max_num_spse_iterations}"
     xb, iterations, success = _preconditioned_conjugate_gradient(
         system.S,
         system.schur_rhs,
         preconditioner,
+        initial_x=initial_x,
+        min_iterations=min_iterations,
         max_iterations=max_iterations,
         tolerance=tolerance,
     )
@@ -618,7 +665,7 @@ def iterative_schur_solve(
         b,
         x,
         iterations,
-        f"iterative schur {preconditioner.message}",
+        f"iterative schur {preconditioner.message}{message_suffix}",
         success=success,
     )
     return result
@@ -716,21 +763,54 @@ def _build_matrix_preconditioner(
     )
 
 
+def _build_cluster_tridiagonal_preconditioner(
+    matrix: torch.Tensor,
+    *,
+    preconditioner_type: PreconditionerType,
+    block_sizes: Sequence[int],
+    message_prefix: str,
+) -> NormalEquationPreconditioner:
+    normalized_block_sizes = _normalize_block_sizes(block_sizes, matrix.shape[0])
+    slices = _block_slices(normalized_block_sizes)
+    approximation = torch.zeros_like(matrix)
+    for i, block_slice in enumerate(slices):
+        approximation[block_slice, block_slice] = matrix[block_slice, block_slice]
+        if i + 1 < len(slices):
+            next_slice = slices[i + 1]
+            approximation[block_slice, next_slice] = matrix[block_slice, next_slice]
+            approximation[next_slice, block_slice] = matrix[next_slice, block_slice]
+    try:
+        factor = torch.linalg.cholesky(approximation)
+        is_cholesky = True
+    except RuntimeError:
+        factor = approximation
+        is_cholesky = False
+    return NormalEquationPreconditioner(
+        preconditioner_type,
+        f"{message_prefix}/{preconditioner_type.value}",
+        normalized_block_sizes,
+        matrix_factor=factor,
+        matrix_is_cholesky=is_cholesky,
+    )
+
+
 def _preconditioned_conjugate_gradient(
     matrix: torch.Tensor,
     rhs: torch.Tensor,
     preconditioner: NormalEquationPreconditioner,
     *,
+    initial_x: Optional[torch.Tensor] = None,
+    min_iterations: int = 0,
     max_iterations: int,
     tolerance: float,
 ) -> tuple[torch.Tensor, int, bool]:
-    x = torch.zeros_like(rhs.reshape(-1))
+    x = torch.zeros_like(rhs.reshape(-1)) if initial_x is None else initial_x.reshape(-1).clone()
     r = rhs.reshape(-1) - matrix @ x
     z = preconditioner.apply(r)
     p = z.clone()
     rz_old = torch.dot(r, z)
     rhs_norm = torch.linalg.norm(rhs).clamp_min(torch.finfo(rhs.dtype).eps)
-    if torch.linalg.norm(r) <= tolerance * rhs_norm:
+    if min_iterations <= 0 and torch.linalg.norm(r) <= tolerance * rhs_norm:
         return x, 0, True
     iterations = 0
     success = False
@@ -738,12 +818,13 @@ def _preconditioned_conjugate_gradient(
         Ap = matrix @ p
         denom = torch.dot(p, Ap)
         if torch.abs(denom) <= torch.finfo(matrix.dtype).eps:
+            success = bool(torch.linalg.norm(r) <= tolerance * rhs_norm)
             break
         alpha = rz_old / denom
         x = x + alpha * p
         r = r - alpha * Ap
         iterations = k + 1
-        if torch.linalg.norm(r) <= tolerance * rhs_norm:
+        if iterations >= min_iterations and torch.linalg.norm(r) <= tolerance * rhs_norm:
             success = True
             break
         z = preconditioner.apply(r)
@@ -754,6 +835,16 @@ def _preconditioned_conjugate_gradient(
         p = z + beta * p
         rz_old = rz_new
     return x, iterations, success
+
+
+def _block_slices(block_sizes: Sequence[int]) -> tuple[slice, ...]:
+    slices: list[slice] = []
+    offset = 0
+    for size in block_sizes:
+        next_offset = offset + size
+        slices.append(slice(offset, next_offset))
+        offset = next_offset
+    return tuple(slices)
 
 
 def _remaining_block_sizes_after_elimination(

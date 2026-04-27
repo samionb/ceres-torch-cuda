@@ -174,6 +174,65 @@ def test_iterative_schur_matches_dense_schur_solution() -> None:
     torch.testing.assert_close(iterative.x, dense.x, atol=1e-10, rtol=1e-10)
 
 
+def test_iterative_solvers_honor_minimum_iteration_count() -> None:
+    A = torch.eye(3, dtype=torch.float64)
+    b = torch.tensor([1.0, -2.0, 0.5], dtype=torch.float64)
+
+    result = tc.solve_linear_system(
+        A,
+        b,
+        solver_type=tc.LinearSolverType.CGNR,
+        min_iterations=3,
+        max_iterations=5,
+        tolerance=1e-14,
+    )
+
+    assert result.summary.success
+    assert result.summary.num_iterations == 3
+    torch.testing.assert_close(result.x, b, atol=1e-12, rtol=1e-12)
+
+
+def test_iterative_schur_uses_spse_initialization_when_requested() -> None:
+    A = torch.tensor(
+        [
+            [3.0, 0.0, 1.0, 0.0],
+            [0.0, 2.0, 0.0, 1.0],
+            [1.0, 1.0, 2.0, -1.0],
+            [0.5, -1.0, 1.0, 2.0],
+            [2.0, 0.0, -1.0, 1.0],
+        ],
+        dtype=torch.float64,
+    )
+    b = torch.tensor([0.4, -1.0, 0.7, 1.5, -0.3], dtype=torch.float64)
+    damping = torch.tensor([0.2, 0.3, 0.4, 0.5], dtype=torch.float64)
+
+    cold = tc.solve_linear_system(
+        A,
+        b,
+        solver_type=tc.LinearSolverType.ITERATIVE_SCHUR,
+        damping=damping,
+        num_eliminate=2,
+        block_sizes=[1, 1, 2],
+        max_iterations=0,
+        use_spse_initialization=False,
+    )
+    warm = tc.solve_linear_system(
+        A,
+        b,
+        solver_type=tc.LinearSolverType.ITERATIVE_SCHUR,
+        damping=damping,
+        num_eliminate=2,
+        block_sizes=[1, 1, 2],
+        max_iterations=0,
+        max_num_spse_iterations=4,
+        use_spse_initialization=True,
+        spse_tolerance=0.0,
+    )
+
+    assert "spse_init/4" in warm.summary.message
+    assert warm.summary.residual_norm < cold.summary.residual_norm
+
+
 def test_schur_power_series_preconditioner_applies_truncated_series() -> None:
     A = torch.tensor(
         [
@@ -212,6 +271,35 @@ def test_schur_power_series_preconditioner_applies_truncated_series() -> None:
 
     assert preconditioner.message == "schur_power_series/3"
     assert preconditioner.block_sizes == (2,)
+    torch.testing.assert_close(preconditioner.apply(residual), expected, atol=1e-10, rtol=1e-10)
+
+
+def test_cluster_tridiagonal_preconditioner_solves_ordered_block_band() -> None:
+    A = torch.tensor(
+        [
+            [2.0, 1.0, 0.0],
+            [0.0, 2.0, 1.0],
+            [1.0, 0.0, 1.0],
+            [0.5, -1.0, 2.0],
+        ],
+        dtype=torch.float64,
+    )
+    damping = torch.tensor([0.3, 0.4, 0.5], dtype=torch.float64)
+    residual = torch.tensor([1.0, -2.0, 0.5], dtype=torch.float64)
+    preconditioner = tc.build_normal_equation_preconditioner(
+        A,
+        damping=damping,
+        preconditioner_type=tc.PreconditionerType.CLUSTER_TRIDIAGONAL,
+        block_sizes=[1, 1, 1],
+    )
+    H = A.T @ A + torch.diag(damping)
+    expected_matrix = H.clone()
+    expected_matrix[0, 2] = 0.0
+    expected_matrix[2, 0] = 0.0
+    expected = torch.linalg.solve(expected_matrix, residual)
+
+    assert preconditioner.message.startswith("cluster_tridiagonal/")
+    assert preconditioner.block_sizes == (1, 1, 1)
     torch.testing.assert_close(preconditioner.apply(residual), expected, atol=1e-10, rtol=1e-10)
 
 
@@ -287,7 +375,10 @@ def test_cgnr_accepts_ceres_preconditioner_families_with_block_structure() -> No
             max_iterations=100,
         )
         assert result.summary.success
-        assert "block_jacobi/" in result.summary.message
+        if preconditioner is tc.PreconditionerType.CLUSTER_TRIDIAGONAL:
+            assert "cluster_tridiagonal/" in result.summary.message
+        else:
+            assert "block_jacobi/" in result.summary.message
         torch.testing.assert_close(result.x, expected, atol=1e-8, rtol=1e-8)
 
 

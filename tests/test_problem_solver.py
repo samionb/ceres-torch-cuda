@@ -385,6 +385,28 @@ def test_trust_region_radius_expands_after_high_quality_steps() -> None:
     assert summary.iterations[1].step_solver_time_in_seconds >= 0.0
 
 
+def test_solver_passes_minimum_linear_iterations_to_iterative_backend() -> None:
+    x = torch.tensor([0.0], dtype=torch.float64)
+    problem = tc.Problem()
+    problem.AddResidualBlock(tc.AutoDiffCostFunction(lambda x: 1.0 - x, [1]), None, [x])
+
+    summary = tc.solve(
+        tc.SolverOptions(
+            linear_solver_type=tc.LinearSolverType.CGNR,
+            min_linear_solver_iterations=3,
+            max_linear_solver_iterations=3,
+            max_num_iterations=1,
+            gradient_tolerance=0.0,
+            function_tolerance=0.0,
+            parameter_tolerance=0.0,
+        ),
+        problem,
+    )
+
+    assert summary.num_linear_solves == 1
+    assert summary.iterations[1].linear_solver_iterations == 3
+
+
 def test_dogleg_solver_honors_subspace_dogleg_option() -> None:
     x = torch.tensor([0.5], dtype=torch.float64)
     y = torch.tensor([-1.0], dtype=torch.float64)
