@@ -122,3 +122,14 @@ def test_simple_bundle_adjuster_parses_bal_and_recovers_points(tmp_path: Path) -
     assert summary.final_cost < 1e-12
     torch.testing.assert_close(cameras, true_cameras, atol=1e-12, rtol=1e-12)
     torch.testing.assert_close(points, true_points, atol=1e-5, rtol=1e-5)
+
+
+def test_more_garbow_hillstrom_subset_converges() -> None:
+    module = load_example("more_garbow_hillstrom")
+    results = module.run()
+
+    assert set(results) == {"rosenbrock", "beale"}
+    for summary, x, spec in results.values():
+        assert summary.IsSolutionUsable()
+        target = torch.tensor(spec.expected, dtype=torch.float64)
+        torch.testing.assert_close(x, target, atol=1e-4, rtol=1e-4)

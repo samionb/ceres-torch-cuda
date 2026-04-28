@@ -1,10 +1,12 @@
 from .callbacks import EvaluationCallback, IterationCallback, LoggingCallback
 from .benchmarking import (
     BenchmarkResult,
+    cluster_tridiagonal_benchmark,
     covariance_benchmark,
     dense_linear_benchmark,
     format_benchmark_results,
     iterative_schur_benchmark,
+    iterative_schur_spse_benchmark,
     run_default_benchmarks,
     schur_benchmark,
     sparse_direct_benchmark,

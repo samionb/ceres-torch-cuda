@@ -17,6 +17,11 @@ def test_covariance_dense_svd_block() -> None:
     assert covariance.Rank() == 1
     assert covariance.Nullity() == 0
     assert covariance.ReciprocalConditionNumber() == 1.0
+    assert "Covariance Report" in covariance.summary.BriefReport()
+    full_report = covariance.summary.FullReport()
+    assert "Covariance Summary" in full_report
+    assert "Requested blocks: 1" in full_report
+    assert "Reciprocal condition number" in full_report
 
 
 def test_covariance_ceres_style_aliases_and_output_copy() -> None:

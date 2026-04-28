@@ -22,14 +22,14 @@ areas. Status values:
 | Dense linear solvers | dense QR/Cholesky files | `ceres_torch.linear` | implemented | Dense QR and normal Cholesky cover damping, rank-deficient fallback, mixed-precision refinement, shape validation, and residual norms within Ceres-style tolerances |
 | Sparse/Schur solvers | Schur, CGNR, sparse Cholesky files | `ceres_torch.linear`, `schur`, `sparse_backends`, `cuda_backends`, `native/cuda` | partial | Dense Schur with ordering, pure PyTorch CGNR and iterative Schur CG paths, minimum iterative solve counts, SPSE initialization, SciPy/SuperLU sparse normal and Schur backend, SuiteSparseQR-style covariance hook, PyTorch CUDA sparse/block-Schur backend, opt-in native CUDA extension |
 | Preconditioners | Jacobi, Schur, cluster, subset files | `ceres_torch.linear` | partial | Identity/Jacobi, exact block-Jacobi Schur/cluster/subset aliases, Schur power-series expansion preconditioner, ordered block cluster-tridiagonal approximation, specialized visibility-clustering graph forms planned |
-| Covariance | `covariance.h`, `covariance_impl.cc` | `ceres_torch.covariance`, `sparse_backends` | partial | Dense SVD/QR covariance blocks, loss toggle, constants, Ceres eigenvalue-ratio rank policy, Ceres-style accessors/output copies, duplicate request guards, manifold tangent/ambient covariance, rank summary, SciPy/SuperLU sparse direct covariance backend, optional SuiteSparseQR-style sparse QR covariance backend |
+| Covariance | `covariance.h`, `covariance_impl.cc` | `ceres_torch.covariance`, `sparse_backends` | partial | Dense SVD/QR covariance blocks, loss toggle, constants, Ceres eigenvalue-ratio rank policy, Ceres-style accessors/output copies, reports, duplicate request guards, manifold tangent/ambient covariance, rank summary, SciPy/SuperLU sparse direct covariance backend, optional SuiteSparseQR-style sparse QR covariance backend |
 | GradientProblemSolver | `gradient_problem_solver.h` | `ceres_torch.gradient_solver` | implemented | General unconstrained minimization with validation, reports, counters, line search, callback state visibility, manifold validation, and Ceres-style timing fields |
 | Callbacks/logging | `iteration_callback.h`, callbacks files | `ceres_torch.callbacks` | implemented | Iteration/evaluation callback behavior and summary visibility |
 | Tiny solver | `tiny_solver.h` | `ceres_torch.tiny_solver` | implemented | Small dense LM behavior with Ceres-style statuses, option validation, cost/gradient/step/function termination, and summary/report API |
 | C API | `c_api.h` | Not cloned | planned exception | Python callable/module support replaces C ABI |
-| Examples/data | `examples`, `data` | `examples`, tests | partial | Port all tutorial examples and BAL/NIST/SLAM validations |
+| Examples/data | `examples`, `data` | `examples`, tests | partial | Port all tutorial examples, More-Garbow-Hillstrom subset, and BAL/NIST/SLAM validations |
 | CUDA | CUDA internal files | PyTorch device + optional backends + `native/cuda` | partial | CUDA tensor smoke tests, PyTorch CUDA sparse/block-Schur backend tests, opt-in native extension build/load test |
-| Performance benchmarks | internal benchmark/test matrix | `ceres_torch.benchmarking`, `benchmarks` | partial | Opt-in dense, dense/iterative Schur, iterative, sparse-direct, covariance, solver, and CUDA benchmark gates |
+| Performance benchmarks | internal benchmark/test matrix | `ceres_torch.benchmarking`, `benchmarks` | partial | Opt-in dense, dense/iterative Schur, SPSE initialization, cluster-tridiagonal, sparse-direct, covariance, solver, and CUDA benchmark gates |
 
 ## Full-Parity Backlog
 
@@ -68,3 +68,4 @@ areas. Status values:
 - `evaluation_callback_example.py`
 - `robot_pose_mle.py`
 - `simple_bundle_adjuster.py`
+- `more_garbow_hillstrom.py`

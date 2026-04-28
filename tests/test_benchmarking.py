@@ -37,12 +37,33 @@ def test_iterative_schur_benchmark_smoke() -> None:
     assert result.metric < 1e-8
 
 
+def test_iterative_schur_spse_benchmark_smoke() -> None:
+    result = tc.iterative_schur_spse_benchmark(
+        rows=36,
+        eliminate=6,
+        remain=4,
+        max_num_spse_iterations=3,
+        warmup=0,
+        repeats=1,
+    )
+
+    assert result.name.startswith("schur/iterative/SCHUR_POWER_SERIES_EXPANSION/spse_init/")
+    assert result.metric < 1e-8
+
+
+def test_cluster_tridiagonal_benchmark_smoke() -> None:
+    result = tc.cluster_tridiagonal_benchmark(rows=48, cols=8, num_blocks=4, warmup=0, repeats=1)
+
+    assert result.name.startswith("linear/CGNR/CLUSTER_TRIDIAGONAL/")
+    assert result.metric < 1e-8
+
+
 @pytest.mark.performance
 @pytest.mark.skipif(not RUN_BENCHMARKS, reason="Set CERES_TORCH_RUN_BENCHMARKS=1 to run performance gates")
 def test_cpu_default_benchmark_suite_performance_gate() -> None:
     results = tc.run_default_benchmarks(device="cpu", dtype=torch.float64, warmup=0, repeats=1)
 
-    assert len(results) == 5
+    assert len(results) == 6
     for result in results:
         assert math.isfinite(result.metric)
         assert result.median_seconds <= BENCHMARK_MAX_SECONDS, result

@@ -136,6 +136,9 @@ def iterative_schur_benchmark(
     dtype: torch.dtype = torch.float64,
     warmup: int = 1,
     repeats: int = 5,
+    preconditioner_type: PreconditionerType = PreconditionerType.SCHUR_JACOBI,
+    use_spse_initialization: bool = False,
+    max_num_spse_iterations: int = 5,
 ) -> BenchmarkResult:
     generator = torch.Generator(device="cpu").manual_seed(13)
     cols = eliminate + remain
@@ -149,15 +152,81 @@ def iterative_schur_benchmark(
             b,
             solver_type=LinearSolverType.ITERATIVE_SCHUR,
             num_eliminate=eliminate,
-            preconditioner_type=PreconditionerType.SCHUR_JACOBI,
+            preconditioner_type=preconditioner_type,
             block_sizes=[eliminate, remain],
             tolerance=1e-12,
             max_iterations=max(20, remain * 4),
+            use_spse_initialization=use_spse_initialization,
+            max_num_spse_iterations=max_num_spse_iterations,
+        )
+        return torch.linalg.norm(A @ result.x - b)
+
+    suffix = "/spse_init" if use_spse_initialization else ""
+    return time_callable(
+        f"schur/iterative/{preconditioner_type.value}{suffix}/{rows}x{cols}/elim{eliminate}",
+        run,
+        device=device,
+        dtype=dtype,
+        warmup=warmup,
+        repeats=repeats,
+    )
+
+
+def iterative_schur_spse_benchmark(
+    *,
+    rows: int = 240,
+    eliminate: int = 36,
+    remain: int = 18,
+    device: torch.device | str = "cpu",
+    dtype: torch.dtype = torch.float64,
+    warmup: int = 1,
+    repeats: int = 5,
+    max_num_spse_iterations: int = 5,
+) -> BenchmarkResult:
+    return iterative_schur_benchmark(
+        rows=rows,
+        eliminate=eliminate,
+        remain=remain,
+        device=device,
+        dtype=dtype,
+        warmup=warmup,
+        repeats=repeats,
+        preconditioner_type=PreconditionerType.SCHUR_POWER_SERIES_EXPANSION,
+        use_spse_initialization=True,
+        max_num_spse_iterations=max_num_spse_iterations,
+    )
+
+
+def cluster_tridiagonal_benchmark(
+    *,
+    rows: int = 180,
+    cols: int = 36,
+    num_blocks: int = 6,
+    device: torch.device | str = "cpu",
+    dtype: torch.dtype = torch.float64,
+    warmup: int = 1,
+    repeats: int = 5,
+) -> BenchmarkResult:
+    generator = torch.Generator(device="cpu").manual_seed(29)
+    A = _randn((rows, cols), generator=generator, dtype=dtype, device=device)
+    x_true = _randn((cols,), generator=generator, dtype=dtype, device=device)
+    b = A @ x_true
+    block_sizes = _balanced_block_sizes(cols, num_blocks)
+
+    def run() -> torch.Tensor:
+        result = solve_linear_system(
+            A,
+            b,
+            solver_type=LinearSolverType.CGNR,
+            preconditioner_type=PreconditionerType.CLUSTER_TRIDIAGONAL,
+            block_sizes=block_sizes,
+            tolerance=1e-12,
+            max_iterations=max(50, cols * 4),
         )
         return torch.linalg.norm(A @ result.x - b)
 
     return time_callable(
-        f"schur/iterative/{rows}x{cols}/elim{eliminate}",
+        f"linear/CGNR/CLUSTER_TRIDIAGONAL/{rows}x{cols}/blocks{len(block_sizes)}",
         run,
         device=device,
         dtype=dtype,
@@ -286,6 +355,7 @@ def run_default_benchmarks(
             repeats=repeats,
         ),
         schur_benchmark(device=device, dtype=dtype, warmup=warmup, repeats=repeats),
+        iterative_schur_benchmark(device=device, dtype=dtype, warmup=warmup, repeats=repeats),
         solver_curve_fit_benchmark(device=device, dtype=dtype, warmup=warmup, repeats=max(1, repeats // 2)),
         covariance_benchmark(device=device, dtype=dtype, warmup=warmup, repeats=max(1, repeats // 2)),
     ]
@@ -321,3 +391,10 @@ def _randn(
     device: torch.device | str,
 ) -> torch.Tensor:
     return torch.randn(shape, generator=generator, dtype=dtype).to(device=device)
+
+
+def _balanced_block_sizes(total: int, num_blocks: int) -> list[int]:
+    num_blocks = max(1, min(total, num_blocks))
+    base = total // num_blocks
+    remainder = total % num_blocks
+    return [base + (1 if i < remainder else 0) for i in range(num_blocks)]

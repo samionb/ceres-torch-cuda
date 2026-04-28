@@ -50,6 +50,39 @@ class CovarianceSummary:
     reciprocal_condition_number: float = 0.0
     requested_null_space_rank: int = 0
 
+    def BriefReport(self) -> str:
+        return (
+            "ceres-torch Covariance Report: "
+            f"Algorithm: {self.algorithm_type.value}, "
+            f"Rank: {self.rank}, "
+            f"Nullity: {self.nullity}, "
+            f"Success: {self.success}"
+        )
+
+    def FullReport(self) -> str:
+        return "\n".join(
+            [
+                "Covariance Summary (ceres-torch)",
+                "",
+                f"Algorithm: {self.algorithm_type.value}",
+                f"Success: {self.success}",
+                f"Message: {self.message}",
+                f"Rows: {self.num_rows}",
+                f"Columns: {self.num_columns}",
+                f"Ambient dimension: {self.ambient_dimension}",
+                f"Tangent dimension: {self.tangent_dimension}",
+                f"Requested blocks: {self.num_requested_blocks}",
+                f"Computed blocks: {self.num_computed_blocks}",
+                f"Rank: {self.rank}",
+                f"Nullity: {self.nullity}",
+                f"Requested null space rank: {self.requested_null_space_rank}",
+                f"Max singular value: {self.max_singular_value:.12e}",
+                f"Min retained singular value: {self.min_retained_singular_value:.12e}",
+                f"Reciprocal condition number: {self.reciprocal_condition_number:.12e}",
+            ]
+        )
+
+
 class Covariance:
     def __init__(self, options: Optional[CovarianceOptions] = None) -> None:
         self.options = options or CovarianceOptions()
