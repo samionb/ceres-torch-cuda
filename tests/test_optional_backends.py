@@ -53,6 +53,48 @@ def test_sparse_schur_delegates_to_registered_block_backend() -> None:
     torch.testing.assert_close(result.x, dense.x)
 
 
+def test_iterative_schur_backend_receives_full_solver_options() -> None:
+    A = torch.tensor([[2.0, 0.0, 1.0], [0.0, 3.0, -1.0], [1.0, 1.0, 2.0]], dtype=torch.float64)
+    b = torch.tensor([1.0, -2.0, 0.5], dtype=torch.float64)
+    captured: list[dict[str, object]] = []
+
+    def backend(A: torch.Tensor, b: torch.Tensor, **kwargs: object) -> torch.Tensor:
+        captured.append(kwargs)
+        return torch.linalg.lstsq(A, b).solution.reshape(-1)
+
+    tc.register_optional_backend("iterative_schur", backend)
+    try:
+        result = tc.solve_linear_system(
+            A,
+            b,
+            solver_type=tc.LinearSolverType.ITERATIVE_SCHUR,
+            num_eliminate=1,
+            min_iterations=2,
+            max_iterations=7,
+            tolerance=1e-5,
+            preconditioner_type=tc.PreconditionerType.SCHUR_POWER_SERIES_EXPANSION,
+            block_sizes=[1, 2],
+            max_num_spse_iterations=4,
+            use_spse_initialization=True,
+            spse_tolerance=0.25,
+        )
+    finally:
+        tc.unregister_optional_backend("iterative_schur")
+
+    assert captured
+    assert captured[0]["solver_type"] is tc.LinearSolverType.ITERATIVE_SCHUR
+    assert captured[0]["num_eliminate"] == 1
+    assert captured[0]["min_iterations"] == 2
+    assert captured[0]["max_iterations"] == 7
+    assert captured[0]["tolerance"] == 1e-5
+    assert captured[0]["preconditioner_type"] is tc.PreconditionerType.SCHUR_POWER_SERIES_EXPANSION
+    assert captured[0]["block_sizes"] == [1, 2]
+    assert captured[0]["max_num_spse_iterations"] == 4
+    assert captured[0]["use_spse_initialization"] is True
+    assert captured[0]["spse_tolerance"] == 0.25
+    assert "optional iterative_schur backend" in result.summary.message
+
+
 def test_covariance_sparse_qr_delegates_to_registered_backend() -> None:
     x = torch.tensor([0.0, 0.0], dtype=torch.float64)
     problem = tc.Problem()
@@ -73,6 +115,25 @@ def test_covariance_sparse_qr_delegates_to_registered_backend() -> None:
 
     assert calls == [(2, 2)]
     torch.testing.assert_close(covariance.get_covariance_block(block, block), 3.0 * torch.eye(2, dtype=torch.float64))
+
+
+def test_covariance_sparse_qr_rejects_backend_shape_mismatch() -> None:
+    x = torch.tensor([0.0, 0.0], dtype=torch.float64)
+    problem = tc.Problem()
+    block = problem.add_parameter_block(x)
+    problem.add_residual_block(tc.NormalPrior(torch.eye(2, dtype=torch.float64), torch.zeros(2, dtype=torch.float64)), None, [x])
+
+    def backend(J: torch.Tensor, **_kwargs: object) -> torch.Tensor:
+        return torch.eye(J.shape[1] + 1, dtype=J.dtype, device=J.device)
+
+    covariance = tc.Covariance(tc.CovarianceOptions(algorithm_type=tc.CovarianceAlgorithmType.SPARSE_QR))
+    tc.register_optional_backend("sparse_qr_covariance", backend)
+    try:
+        assert not covariance.compute([(block, block)], problem)
+    finally:
+        tc.unregister_optional_backend("sparse_qr_covariance")
+
+    assert "expected (2, 2)" in covariance.summary.message
 
 
 def test_optional_backend_registry_helpers() -> None:
@@ -229,3 +290,19 @@ def test_suitesparseqr_registration_overrides_sparse_qr_slot(monkeypatch: pytest
         assert tc.get_optional_backend("sparse_qr_covariance") is tc.suitesparseqr_sparse_qr_covariance
     finally:
         tc.unregister_suitesparseqr_sparse_qr_backend()
+
+
+def test_unregister_native_sparse_backends_clears_suitesparseqr_slot(monkeypatch: pytest.MonkeyPatch) -> None:
+    import ceres_torch.sparse_backends as sparse_backends
+
+    monkeypatch.setattr(sparse_backends, "scipy_sparse_available", lambda: True)
+    monkeypatch.setattr(sparse_backends, "_find_suitesparseqr_module_name", lambda: "sparseqr")
+
+    tc.register_native_sparse_backends()
+    assert tc.get_optional_backend("sparse_normal_cholesky") is not None
+    assert tc.get_optional_backend("sparse_qr_covariance") is not None
+
+    tc.unregister_native_sparse_backends()
+
+    assert tc.get_optional_backend("sparse_normal_cholesky") is None
+    assert tc.get_optional_backend("sparse_qr_covariance") is None

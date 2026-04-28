@@ -131,6 +131,13 @@ def solve_linear_system(
             num_eliminate=num_eliminate,
             solver_type=solver_type,
             block_sizes=block_sizes,
+            min_iterations=min_iterations,
+            max_iterations=max_iterations,
+            tolerance=tolerance,
+            preconditioner_type=preconditioner_type,
+            max_num_spse_iterations=max_num_spse_iterations,
+            use_spse_initialization=use_spse_initialization,
+            spse_tolerance=spse_tolerance,
         )
         if backend_result is None:
             backend_result = _try_optional_linear_backend(
@@ -141,6 +148,13 @@ def solve_linear_system(
                 num_eliminate=num_eliminate,
                 solver_type=solver_type,
                 block_sizes=block_sizes,
+                min_iterations=min_iterations,
+                max_iterations=max_iterations,
+                tolerance=tolerance,
+                preconditioner_type=preconditioner_type,
+                max_num_spse_iterations=max_num_spse_iterations,
+                use_spse_initialization=use_spse_initialization,
+                spse_tolerance=spse_tolerance,
             )
         if backend_result is not None:
             return backend_result
@@ -163,6 +177,13 @@ def solve_linear_system(
             num_eliminate=num_eliminate,
             solver_type=solver_type,
             block_sizes=block_sizes,
+            min_iterations=min_iterations,
+            max_iterations=max_iterations,
+            tolerance=tolerance,
+            preconditioner_type=preconditioner_type,
+            max_num_spse_iterations=max_num_spse_iterations,
+            use_spse_initialization=use_spse_initialization,
+            spse_tolerance=spse_tolerance,
         )
         if backend_result is None:
             backend_result = _try_optional_linear_backend(
@@ -173,6 +194,13 @@ def solve_linear_system(
                 num_eliminate=num_eliminate,
                 solver_type=solver_type,
                 block_sizes=block_sizes,
+                min_iterations=min_iterations,
+                max_iterations=max_iterations,
+                tolerance=tolerance,
+                preconditioner_type=preconditioner_type,
+                max_num_spse_iterations=max_num_spse_iterations,
+                use_spse_initialization=use_spse_initialization,
+                spse_tolerance=spse_tolerance,
             )
         if backend_result is not None:
             return backend_result

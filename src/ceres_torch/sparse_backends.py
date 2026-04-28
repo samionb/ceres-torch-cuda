@@ -127,6 +127,7 @@ def unregister_suitesparseqr_sparse_qr_backend() -> None:
 
 def unregister_native_sparse_backends() -> None:
     unregister_scipy_sparse_backends()
+    unregister_suitesparseqr_sparse_qr_backend()
 
 
 def scipy_sparse_normal_cholesky(
