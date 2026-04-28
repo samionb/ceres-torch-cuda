@@ -303,6 +303,76 @@ def test_cluster_tridiagonal_preconditioner_solves_ordered_block_band() -> None:
     torch.testing.assert_close(preconditioner.apply(residual), expected, atol=1e-10, rtol=1e-10)
 
 
+def test_schur_visibility_graph_uses_ceres_pair_weights() -> None:
+    graph = tc.create_schur_complement_visibility_graph([{0, 1}, {1, 2}, {3}])
+
+    assert graph[(0, 0)] == 1.0
+    assert graph[(1, 1)] == 1.0
+    assert graph[(2, 2)] == 1.0
+    assert graph[(0, 1)] == pytest.approx(0.5)
+    assert (0, 2) not in graph
+
+
+def test_single_linkage_visibility_clustering_groups_strong_edges() -> None:
+    membership = tc.single_linkage_visibility_clustering([{0, 1}, {0, 1}, {2}, {2}])
+
+    assert membership == (0, 0, 1, 1)
+
+
+def test_visibility_cluster_tridiagonal_uses_degree_two_forest_edges() -> None:
+    structure = tc.build_visibility_cluster_structure(
+        [{0, 1, 2}, {0}, {1}, {2}],
+        preconditioner_type=tc.PreconditionerType.CLUSTER_TRIDIAGONAL,
+        visibility_clustering_type=tc.VisibilityClusteringType.SINGLE_LINKAGE,
+    )
+    off_diagonal_pairs = [pair for pair in structure.cluster_pairs if pair[0] != pair[1]]
+    degrees = {cluster: 0 for cluster in range(structure.num_clusters)}
+    for cluster1, cluster2 in off_diagonal_pairs:
+        degrees[cluster1] += 1
+        degrees[cluster2] += 1
+
+    assert structure.membership == (0, 1, 2, 3)
+    assert len(off_diagonal_pairs) == 2
+    assert max(degrees.values()) <= 2
+    assert structure.block_pairs == structure.cluster_pairs
+
+
+def test_visibility_cluster_jacobi_preconditioner_uses_visibility_membership() -> None:
+    A = torch.tensor(
+        [
+            [3.0, 0.0, 1.0, 0.0, 0.0],
+            [0.0, 2.0, 0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0, 1.0],
+            [0.0, 1.0, 1.0, 1.0, 0.0],
+            [2.0, 0.0, 0.0, 1.0, 1.0],
+            [0.0, 1.0, 0.0, 0.0, 2.0],
+        ],
+        dtype=torch.float64,
+    )
+    damping = torch.full((5,), 0.5, dtype=torch.float64)
+    residual = torch.tensor([1.0, -2.0, 0.5, 1.5], dtype=torch.float64)
+    preconditioner = tc.build_schur_complement_preconditioner(
+        A,
+        damping=damping,
+        num_eliminate=1,
+        preconditioner_type=tc.PreconditionerType.CLUSTER_JACOBI,
+        block_sizes=[1, 1, 1, 1, 1],
+        visibility=[{0, 1}, {0, 1}, {2}, {2}],
+        visibility_clustering_type=tc.VisibilityClusteringType.SINGLE_LINKAGE,
+    )
+    H = A.T @ A + torch.diag(damping)
+    S = H[1:, 1:] - H[1:, :1] @ torch.linalg.solve(H[:1, :1], H[:1, 1:])
+    expected_matrix = torch.zeros_like(S)
+    expected_matrix[:2, :2] = S[:2, :2]
+    expected_matrix[2:, 2:] = S[2:, 2:]
+    expected = torch.linalg.solve(expected_matrix, residual)
+
+    assert preconditioner.visibility_structure is not None
+    assert preconditioner.visibility_structure.membership == (0, 0, 1, 1)
+    assert "schur_cluster_jacobi_visibility/SINGLE_LINKAGE" in preconditioner.message
+    torch.testing.assert_close(preconditioner.apply(residual), expected, atol=1e-10, rtol=1e-10)
+
+
 def test_block_jacobi_preconditioner_applies_exact_normal_blocks() -> None:
     A = torch.tensor(
         [

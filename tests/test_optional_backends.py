@@ -30,11 +30,11 @@ def test_sparse_schur_delegates_to_registered_block_backend() -> None:
     A = torch.tensor([[2.0, 1.0], [1.0, 3.0], [0.0, 1.0]], dtype=torch.float64)
     b = torch.tensor([1.0, -2.0, 0.5], dtype=torch.float64)
     dense = tc.solve_linear_system(A, b, solver_type=tc.LinearSolverType.DENSE_SCHUR, num_eliminate=1)
-    calls: list[int] = []
+    calls: list[dict[str, object]] = []
 
     def backend(A: torch.Tensor, b: torch.Tensor, **kwargs: object) -> torch.Tensor:
         num_eliminate = int(kwargs["num_eliminate"])
-        calls.append(num_eliminate)
+        calls.append(kwargs)
         return tc.schur_solve_dense(A, b, num_eliminate)
 
     tc.register_optional_backend("sparse_schur", backend)
@@ -44,11 +44,31 @@ def test_sparse_schur_delegates_to_registered_block_backend() -> None:
             b,
             solver_type=tc.LinearSolverType.SPARSE_SCHUR,
             num_eliminate=1,
+            min_iterations=2,
+            max_iterations=9,
+            tolerance=1e-4,
+            preconditioner_type=tc.PreconditionerType.CLUSTER_TRIDIAGONAL,
+            block_sizes=[1, 1],
+            max_num_spse_iterations=4,
+            use_spse_initialization=True,
+            spse_tolerance=0.2,
+            visibility=[{0}],
+            visibility_clustering_type=tc.VisibilityClusteringType.SINGLE_LINKAGE,
         )
     finally:
         tc.unregister_optional_backend("sparse_schur")
 
-    assert calls == [1]
+    assert calls
+    assert calls[0]["solver_type"] is tc.LinearSolverType.SPARSE_SCHUR
+    assert calls[0]["num_eliminate"] == 1
+    assert calls[0]["min_iterations"] == 2
+    assert calls[0]["max_iterations"] == 9
+    assert calls[0]["tolerance"] == 1e-4
+    assert calls[0]["preconditioner_type"] is tc.PreconditionerType.CLUSTER_TRIDIAGONAL
+    assert calls[0]["max_num_spse_iterations"] == 4
+    assert calls[0]["use_spse_initialization"] is True
+    assert calls[0]["spse_tolerance"] == 0.2
+    assert calls[0]["visibility_clustering_type"] is tc.VisibilityClusteringType.SINGLE_LINKAGE
     assert "optional sparse_schur backend" in result.summary.message
     torch.testing.assert_close(result.x, dense.x)
 
@@ -134,6 +154,25 @@ def test_covariance_sparse_qr_rejects_backend_shape_mismatch() -> None:
         tc.unregister_optional_backend("sparse_qr_covariance")
 
     assert "expected (2, 2)" in covariance.summary.message
+
+
+def test_covariance_sparse_qr_rejects_non_tensor_backend_result() -> None:
+    x = torch.tensor([0.0, 0.0], dtype=torch.float64)
+    problem = tc.Problem()
+    block = problem.add_parameter_block(x)
+    problem.add_residual_block(tc.NormalPrior(torch.eye(2, dtype=torch.float64), torch.zeros(2, dtype=torch.float64)), None, [x])
+
+    def backend(_J: torch.Tensor, **_kwargs: object) -> list[float]:
+        return [1.0, 0.0, 0.0, 1.0]
+
+    covariance = tc.Covariance(tc.CovarianceOptions(algorithm_type=tc.CovarianceAlgorithmType.SPARSE_QR))
+    tc.register_optional_backend("sparse_qr_covariance", backend)  # type: ignore[arg-type]
+    try:
+        assert not covariance.compute([(block, block)], problem)
+    finally:
+        tc.unregister_optional_backend("sparse_qr_covariance")
+
+    assert "did not return a torch.Tensor" in covariance.summary.message
 
 
 def test_optional_backend_registry_helpers() -> None:

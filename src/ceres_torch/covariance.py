@@ -143,10 +143,15 @@ class Covariance:
             if backend is not None:
                 try:
                     self._tangent_covariance = backend(J, options=self.options, slices=self._slices)  # type: ignore[assignment]
-                    if self._tangent_covariance.shape != (J.shape[1], J.shape[1]):
+                    expected_shape = (J.shape[1], J.shape[1])
+                    if not isinstance(self._tangent_covariance, torch.Tensor):
+                        self.summary.message = "Optional sparse QR backend did not return a torch.Tensor covariance."
+                        self._tangent_covariance = None
+                        return False
+                    if self._tangent_covariance.shape != expected_shape:
                         self.summary.message = (
                             "Optional sparse QR backend returned covariance with shape "
-                            f"{tuple(self._tangent_covariance.shape)}, expected {(J.shape[1], J.shape[1])}."
+                            f"{tuple(self._tangent_covariance.shape)}, expected {expected_shape}."
                         )
                         self._tangent_covariance = None
                         return False

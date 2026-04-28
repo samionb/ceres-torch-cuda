@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Optional, Sequence
+from math import sqrt
+from typing import Any, Callable, Iterable, Optional, Sequence
 
 import torch
 
-from .types import DoglegType, LinearSolverType, PreconditionerType
+from .types import DoglegType, LinearSolverType, PreconditionerType, VisibilityClusteringType
 
 
 @dataclass
@@ -22,6 +23,18 @@ class LinearSolverResult:
     summary: LinearSolverSummary
 
 
+@dataclass(frozen=True)
+class VisibilityClusterStructure:
+    visibility_clustering_type: VisibilityClusteringType
+    preconditioner_type: PreconditionerType
+    membership: tuple[int, ...]
+    cluster_pairs: tuple[tuple[int, int], ...]
+    block_pairs: tuple[tuple[int, int], ...]
+    num_clusters: int
+    camera_graph_edges: tuple[tuple[int, int, float], ...] = ()
+    cluster_graph_edges: tuple[tuple[int, int, float], ...] = ()
+
+
 @dataclass
 class NormalEquationPreconditioner:
     preconditioner_type: PreconditionerType
@@ -35,6 +48,7 @@ class NormalEquationPreconditioner:
     power_series_tolerance: float = 0.0
     matrix_factor: Optional[torch.Tensor] = None
     matrix_is_cholesky: bool = False
+    visibility_structure: Optional[VisibilityClusterStructure] = None
 
     def apply(self, residual: torch.Tensor) -> torch.Tensor:
         if self.preconditioner_type is PreconditionerType.IDENTITY:
@@ -106,6 +120,8 @@ def solve_linear_system(
     max_num_spse_iterations: int = 5,
     use_spse_initialization: bool = False,
     spse_tolerance: float = 0.1,
+    visibility: Optional[Sequence[Iterable[int]]] = None,
+    visibility_clustering_type: VisibilityClusteringType = VisibilityClusteringType.CANONICAL_VIEWS,
 ) -> LinearSolverResult:
     if A.ndim != 2:
         raise ValueError("A must be a 2D matrix")
@@ -138,6 +154,8 @@ def solve_linear_system(
             max_num_spse_iterations=max_num_spse_iterations,
             use_spse_initialization=use_spse_initialization,
             spse_tolerance=spse_tolerance,
+            visibility=visibility,
+            visibility_clustering_type=visibility_clustering_type,
         )
         if backend_result is None:
             backend_result = _try_optional_linear_backend(
@@ -155,6 +173,8 @@ def solve_linear_system(
                 max_num_spse_iterations=max_num_spse_iterations,
                 use_spse_initialization=use_spse_initialization,
                 spse_tolerance=spse_tolerance,
+                visibility=visibility,
+                visibility_clustering_type=visibility_clustering_type,
             )
         if backend_result is not None:
             return backend_result
@@ -184,6 +204,8 @@ def solve_linear_system(
             max_num_spse_iterations=max_num_spse_iterations,
             use_spse_initialization=use_spse_initialization,
             spse_tolerance=spse_tolerance,
+            visibility=visibility,
+            visibility_clustering_type=visibility_clustering_type,
         )
         if backend_result is None:
             backend_result = _try_optional_linear_backend(
@@ -201,6 +223,8 @@ def solve_linear_system(
                 max_num_spse_iterations=max_num_spse_iterations,
                 use_spse_initialization=use_spse_initialization,
                 spse_tolerance=spse_tolerance,
+                visibility=visibility,
+                visibility_clustering_type=visibility_clustering_type,
             )
         if backend_result is not None:
             return backend_result
@@ -217,6 +241,8 @@ def solve_linear_system(
             max_num_spse_iterations=max_num_spse_iterations,
             use_spse_initialization=use_spse_initialization,
             spse_tolerance=spse_tolerance,
+            visibility=visibility,
+            visibility_clustering_type=visibility_clustering_type,
         )
 
     if solver_type in {LinearSolverType.CGNR, LinearSolverType.ITERATIVE_SCHUR}:
@@ -246,6 +272,15 @@ def solve_linear_system(
                 num_eliminate=num_eliminate,
                 solver_type=solver_type,
                 block_sizes=block_sizes,
+                min_iterations=min_iterations,
+                max_iterations=max_iterations,
+                tolerance=tolerance,
+                preconditioner_type=preconditioner_type,
+                max_num_spse_iterations=max_num_spse_iterations,
+                use_spse_initialization=use_spse_initialization,
+                spse_tolerance=spse_tolerance,
+                visibility=visibility,
+                visibility_clustering_type=visibility_clustering_type,
             )
             if backend_result is not None:
                 return backend_result
@@ -260,6 +295,15 @@ def solve_linear_system(
             num_eliminate=num_eliminate,
             solver_type=solver_type,
             block_sizes=block_sizes,
+            min_iterations=min_iterations,
+            max_iterations=max_iterations,
+            tolerance=tolerance,
+            preconditioner_type=preconditioner_type,
+            max_num_spse_iterations=max_num_spse_iterations,
+            use_spse_initialization=use_spse_initialization,
+            spse_tolerance=spse_tolerance,
+            visibility=visibility,
+            visibility_clustering_type=visibility_clustering_type,
         )
         if backend_result is None:
             backend_result = _try_optional_linear_backend(
@@ -270,6 +314,15 @@ def solve_linear_system(
                 num_eliminate=num_eliminate,
                 solver_type=solver_type,
                 block_sizes=block_sizes,
+                min_iterations=min_iterations,
+                max_iterations=max_iterations,
+                tolerance=tolerance,
+                preconditioner_type=preconditioner_type,
+                max_num_spse_iterations=max_num_spse_iterations,
+                use_spse_initialization=use_spse_initialization,
+                spse_tolerance=spse_tolerance,
+                visibility=visibility,
+                visibility_clustering_type=visibility_clustering_type,
             )
         if backend_result is not None:
             return backend_result
@@ -415,6 +468,8 @@ def build_schur_complement_preconditioner(
     block_sizes: Optional[Sequence[int]] = None,
     max_num_spse_iterations: int = 5,
     spse_tolerance: float = 0.1,
+    visibility: Optional[Sequence[Iterable[int]]] = None,
+    visibility_clustering_type: VisibilityClusteringType = VisibilityClusteringType.CANONICAL_VIEWS,
 ) -> NormalEquationPreconditioner:
     if A.ndim != 2:
         raise ValueError("A must be a 2D matrix")
@@ -441,11 +496,29 @@ def build_schur_complement_preconditioner(
             power_series_tolerance=spse_tolerance,
         )
     if preconditioner_type is PreconditionerType.CLUSTER_TRIDIAGONAL and len(retained_block_sizes) > 1:
+        if visibility is not None:
+            return _build_visibility_cluster_preconditioner(
+                system.S,
+                preconditioner_type=preconditioner_type,
+                block_sizes=retained_block_sizes,
+                visibility=visibility,
+                visibility_clustering_type=visibility_clustering_type,
+                message_prefix="schur_cluster_tridiagonal",
+            )
         return _build_cluster_tridiagonal_preconditioner(
             system.S,
             preconditioner_type=preconditioner_type,
             block_sizes=retained_block_sizes,
             message_prefix="schur_cluster_tridiagonal",
+        )
+    if preconditioner_type is PreconditionerType.CLUSTER_JACOBI and visibility is not None:
+        return _build_visibility_cluster_preconditioner(
+            system.S,
+            preconditioner_type=preconditioner_type,
+            block_sizes=retained_block_sizes,
+            visibility=visibility,
+            visibility_clustering_type=visibility_clustering_type,
+            message_prefix="schur_cluster_jacobi",
         )
     if _uses_block_preconditioner(preconditioner_type) and any(size > 1 for size in retained_block_sizes):
         return _build_matrix_preconditioner(
@@ -640,6 +713,8 @@ def iterative_schur_solve(
     max_num_spse_iterations: int = 5,
     use_spse_initialization: bool = False,
     spse_tolerance: float = 0.1,
+    visibility: Optional[Sequence[Iterable[int]]] = None,
+    visibility_clustering_type: VisibilityClusteringType = VisibilityClusteringType.CANONICAL_VIEWS,
 ) -> LinearSolverResult:
     if num_eliminate <= 0 or num_eliminate >= A.shape[1]:
         return conjugate_gradient_normal_equations(
@@ -662,6 +737,8 @@ def iterative_schur_solve(
         block_sizes=block_sizes,
         max_num_spse_iterations=max_num_spse_iterations,
         spse_tolerance=spse_tolerance,
+        visibility=visibility,
+        visibility_clustering_type=visibility_clustering_type,
     )
     initial_x: torch.Tensor | None = None
     message_suffix = ""
@@ -760,6 +837,320 @@ def _build_schur_complement_system(
         gb=gb,
         schur_rhs=schur_rhs,
     )
+
+
+def create_schur_complement_visibility_graph(
+    visibility: Sequence[Iterable[int]],
+) -> dict[tuple[int, int], float]:
+    normalized = _normalize_visibility(visibility)
+    inverse_visibility: dict[int, list[int]] = {}
+    for camera_id, visible_points in enumerate(normalized):
+        for point_id in visible_points:
+            inverse_visibility.setdefault(point_id, []).append(camera_id)
+
+    pair_counts: dict[tuple[int, int], int] = {}
+    for cameras in inverse_visibility.values():
+        ordered = sorted(cameras)
+        for i, camera1 in enumerate(ordered):
+            for camera2 in ordered[i + 1 :]:
+                pair_counts[(camera1, camera2)] = pair_counts.get((camera1, camera2), 0) + 1
+
+    edges = {(camera_id, camera_id): 1.0 for camera_id in range(len(normalized))}
+    for (camera1, camera2), count in pair_counts.items():
+        denom = sqrt(float(len(normalized[camera1]) * len(normalized[camera2])))
+        if denom > 0.0:
+            edges[(camera1, camera2)] = float(count) / denom
+    return dict(sorted(edges.items()))
+
+
+def single_linkage_visibility_clustering(
+    visibility: Sequence[Iterable[int]],
+    *,
+    min_similarity: float = 0.9,
+) -> tuple[int, ...]:
+    graph = create_schur_complement_visibility_graph(visibility)
+    num_vertices = len(_normalize_visibility(visibility))
+    parent = {vertex: vertex for vertex in range(num_vertices)}
+
+    def find(vertex: int) -> int:
+        root = vertex
+        while parent[root] != root:
+            root = parent[root]
+        while parent[vertex] != vertex:
+            next_vertex = parent[vertex]
+            parent[vertex] = root
+            vertex = next_vertex
+        return root
+
+    for (vertex1, vertex2), weight in graph.items():
+        if vertex1 >= vertex2 or weight < min_similarity:
+            continue
+        root1 = find(vertex1)
+        root2 = find(vertex2)
+        if root1 == root2:
+            continue
+        if root1 < root2:
+            parent[root2] = root1
+        else:
+            parent[root1] = root2
+    return _flatten_cluster_membership({vertex: find(vertex) for vertex in range(num_vertices)}, num_vertices)
+
+
+def canonical_views_visibility_clustering(
+    visibility: Sequence[Iterable[int]],
+    *,
+    min_views: int = 3,
+    size_penalty_weight: float = 3.0,
+    similarity_penalty_weight: float = 0.0,
+    view_score_weight: float = 0.0,
+) -> tuple[int, ...]:
+    graph = create_schur_complement_visibility_graph(visibility)
+    num_vertices = len(_normalize_visibility(visibility))
+    valid_views = set(range(num_vertices))
+    centers: list[int] = []
+    view_to_canonical_view: dict[int, int] = {}
+    view_to_canonical_view_similarity: dict[int, float] = {}
+
+    while valid_views:
+        best_difference = -float("inf")
+        best_view = min(valid_views)
+        for candidate in sorted(valid_views):
+            difference = view_score_weight
+            for neighbor in _graph_neighbors(graph, candidate):
+                old_similarity = view_to_canonical_view_similarity.get(neighbor, 0.0)
+                new_similarity = _graph_edge_weight(graph, neighbor, candidate)
+                if new_similarity > old_similarity:
+                    difference += new_similarity - old_similarity
+            difference -= size_penalty_weight
+            for center in centers:
+                difference -= similarity_penalty_weight * _graph_edge_weight(graph, center, candidate)
+            if difference > best_difference:
+                best_difference = difference
+                best_view = candidate
+
+        if best_difference <= 0.0 and len(centers) >= min_views:
+            break
+        centers.append(best_view)
+        valid_views.remove(best_view)
+        for neighbor in _graph_neighbors(graph, best_view):
+            old_similarity = view_to_canonical_view_similarity.get(neighbor, 0.0)
+            new_similarity = _graph_edge_weight(graph, neighbor, best_view)
+            if new_similarity > old_similarity:
+                view_to_canonical_view[neighbor] = best_view
+                view_to_canonical_view_similarity[neighbor] = new_similarity
+
+    center_to_cluster = {center: index for index, center in enumerate(centers)}
+    membership: dict[int, int] = {}
+    for view in range(num_vertices):
+        center = view_to_canonical_view.get(view)
+        if center is None:
+            membership[view] = -1
+        else:
+            membership[view] = center_to_cluster[center]
+    return _flatten_cluster_membership(membership, num_vertices)
+
+
+def build_visibility_cluster_structure(
+    visibility: Sequence[Iterable[int]],
+    *,
+    preconditioner_type: PreconditionerType = PreconditionerType.CLUSTER_JACOBI,
+    visibility_clustering_type: VisibilityClusteringType = VisibilityClusteringType.CANONICAL_VIEWS,
+) -> VisibilityClusterStructure:
+    if preconditioner_type not in {PreconditionerType.CLUSTER_JACOBI, PreconditionerType.CLUSTER_TRIDIAGONAL}:
+        raise ValueError("visibility clustering is only defined for CLUSTER_JACOBI and CLUSTER_TRIDIAGONAL")
+    normalized = _normalize_visibility(visibility)
+    if visibility_clustering_type is VisibilityClusteringType.SINGLE_LINKAGE:
+        membership = single_linkage_visibility_clustering(normalized)
+    elif visibility_clustering_type is VisibilityClusteringType.CANONICAL_VIEWS:
+        membership = canonical_views_visibility_clustering(normalized)
+    else:
+        raise ValueError(f"Unknown visibility clustering type: {visibility_clustering_type}")
+
+    num_clusters = max(membership) + 1 if membership else 0
+    cluster_pairs: set[tuple[int, int]] = {(cluster, cluster) for cluster in range(num_clusters)}
+    cluster_graph = _create_cluster_visibility_graph(normalized, membership, num_clusters)
+    if preconditioner_type is PreconditionerType.CLUSTER_TRIDIAGONAL and num_clusters > 1:
+        cluster_pairs.update(degree2_maximum_spanning_forest_edges(num_clusters, cluster_graph))
+    block_pairs = []
+    for block1 in range(len(membership)):
+        for block2 in range(block1, len(membership)):
+            cluster1, cluster2 = sorted((membership[block1], membership[block2]))
+            if (cluster1, cluster2) in cluster_pairs:
+                block_pairs.append((block1, block2))
+    return VisibilityClusterStructure(
+        visibility_clustering_type=visibility_clustering_type,
+        preconditioner_type=preconditioner_type,
+        membership=membership,
+        cluster_pairs=tuple(sorted(cluster_pairs)),
+        block_pairs=tuple(block_pairs),
+        num_clusters=num_clusters,
+        camera_graph_edges=_edge_dict_to_tuple(create_schur_complement_visibility_graph(normalized)),
+        cluster_graph_edges=_edge_dict_to_tuple(cluster_graph),
+    )
+
+
+def degree2_maximum_spanning_forest_edges(
+    num_vertices: int,
+    weighted_edges: dict[tuple[int, int], float],
+) -> tuple[tuple[int, int], ...]:
+    parent = {vertex: vertex for vertex in range(num_vertices)}
+    degree = {vertex: 0 for vertex in range(num_vertices)}
+
+    def find(vertex: int) -> int:
+        root = vertex
+        while parent[root] != root:
+            root = parent[root]
+        while parent[vertex] != vertex:
+            next_vertex = parent[vertex]
+            parent[vertex] = root
+            vertex = next_vertex
+        return root
+
+    edges: list[tuple[float, tuple[int, int]]] = []
+    for (vertex1, vertex2), weight in weighted_edges.items():
+        if vertex1 == vertex2:
+            continue
+        edge = (vertex1, vertex2) if vertex1 < vertex2 else (vertex2, vertex1)
+        edges.append((float(weight), edge))
+    forest_edges: list[tuple[int, int]] = []
+    for _weight, (vertex1, vertex2) in sorted(edges, reverse=True):
+        if degree[vertex1] == 2 or degree[vertex2] == 2:
+            continue
+        root1 = find(vertex1)
+        root2 = find(vertex2)
+        if root1 == root2:
+            continue
+        forest_edges.append((vertex1, vertex2))
+        degree[vertex1] += 1
+        degree[vertex2] += 1
+        if root2 < root1:
+            root1, root2 = root2, root1
+        parent[root2] = root1
+    return tuple(sorted(forest_edges))
+
+
+def _build_visibility_cluster_preconditioner(
+    matrix: torch.Tensor,
+    *,
+    preconditioner_type: PreconditionerType,
+    block_sizes: Sequence[int],
+    visibility: Sequence[Iterable[int]],
+    visibility_clustering_type: VisibilityClusteringType,
+    message_prefix: str,
+) -> NormalEquationPreconditioner:
+    normalized_block_sizes = _normalize_block_sizes(block_sizes, matrix.shape[0])
+    if len(visibility) != len(normalized_block_sizes):
+        raise ValueError("visibility must contain one entry per retained Schur block")
+    structure = build_visibility_cluster_structure(
+        visibility,
+        preconditioner_type=preconditioner_type,
+        visibility_clustering_type=visibility_clustering_type,
+    )
+    slices = _block_slices(normalized_block_sizes)
+    approximation = torch.zeros_like(matrix)
+    for block1, block2 in structure.block_pairs:
+        slice1 = slices[block1]
+        slice2 = slices[block2]
+        approximation[slice1, slice2] = matrix[slice1, slice2]
+        if block1 != block2:
+            approximation[slice2, slice1] = matrix[slice2, slice1]
+
+    factor, is_cholesky = _factor_preconditioner_matrix(approximation)
+    if not is_cholesky and preconditioner_type is PreconditionerType.CLUSTER_TRIDIAGONAL:
+        scaled = approximation.clone()
+        for block1, block2 in structure.block_pairs:
+            if structure.membership[block1] == structure.membership[block2]:
+                continue
+            slice1 = slices[block1]
+            slice2 = slices[block2]
+            scaled[slice1, slice2] *= 0.5
+            if block1 != block2:
+                scaled[slice2, slice1] *= 0.5
+        scaled_factor, scaled_is_cholesky = _factor_preconditioner_matrix(scaled)
+        if scaled_is_cholesky:
+            factor, is_cholesky = scaled_factor, True
+        else:
+            factor = scaled
+    return NormalEquationPreconditioner(
+        preconditioner_type,
+        (
+            f"{message_prefix}_visibility/{visibility_clustering_type.value}/"
+            f"clusters:{structure.num_clusters}/pairs:{len(structure.block_pairs)}"
+        ),
+        normalized_block_sizes,
+        matrix_factor=factor,
+        matrix_is_cholesky=is_cholesky,
+        visibility_structure=structure,
+    )
+
+
+def _normalize_visibility(visibility: Sequence[Iterable[int]]) -> tuple[frozenset[int], ...]:
+    normalized: list[frozenset[int]] = []
+    for visible_points in visibility:
+        points: set[int] = set()
+        for point in visible_points:
+            point_id = int(point)
+            if point_id < 0:
+                raise ValueError("visibility point ids must be non-negative")
+            points.add(point_id)
+        normalized.append(frozenset(points))
+    return tuple(normalized)
+
+
+def _graph_neighbors(graph: dict[tuple[int, int], float], vertex: int) -> tuple[int, ...]:
+    neighbors: set[int] = set()
+    for vertex1, vertex2 in graph:
+        if vertex1 == vertex:
+            neighbors.add(vertex2)
+        if vertex2 == vertex:
+            neighbors.add(vertex1)
+    return tuple(sorted(neighbors))
+
+
+def _graph_edge_weight(graph: dict[tuple[int, int], float], vertex1: int, vertex2: int) -> float:
+    edge = (vertex1, vertex2) if vertex1 <= vertex2 else (vertex2, vertex1)
+    return graph.get(edge, 0.0)
+
+
+def _flatten_cluster_membership(membership: dict[int, int], num_vertices: int) -> tuple[int, ...]:
+    cluster_to_index: dict[int, int] = {}
+    flattened: list[int] = []
+    for vertex in range(num_vertices):
+        cluster = membership.get(vertex, -1)
+        if cluster < 0:
+            cluster = vertex
+        if cluster not in cluster_to_index:
+            cluster_to_index[cluster] = len(cluster_to_index)
+        flattened.append(cluster_to_index[cluster])
+    return tuple(flattened)
+
+
+def _create_cluster_visibility_graph(
+    visibility: tuple[frozenset[int], ...],
+    membership: tuple[int, ...],
+    num_clusters: int,
+) -> dict[tuple[int, int], float]:
+    cluster_visibility: list[set[int]] = [set() for _ in range(num_clusters)]
+    for block_id, visible_points in enumerate(visibility):
+        cluster_visibility[membership[block_id]].update(visible_points)
+    cluster_graph: dict[tuple[int, int], float] = {}
+    for cluster1 in range(num_clusters):
+        for cluster2 in range(cluster1 + 1, num_clusters):
+            intersection_size = len(cluster_visibility[cluster1].intersection(cluster_visibility[cluster2]))
+            if intersection_size:
+                cluster_graph[(cluster1, cluster2)] = float(intersection_size)
+    return dict(sorted(cluster_graph.items()))
+
+
+def _edge_dict_to_tuple(edges: dict[tuple[int, int], float]) -> tuple[tuple[int, int, float], ...]:
+    return tuple((vertex1, vertex2, weight) for (vertex1, vertex2), weight in sorted(edges.items()))
+
+
+def _factor_preconditioner_matrix(matrix: torch.Tensor) -> tuple[torch.Tensor, bool]:
+    try:
+        return torch.linalg.cholesky(matrix), True
+    except RuntimeError:
+        return matrix, False
 
 
 def _build_matrix_preconditioner(

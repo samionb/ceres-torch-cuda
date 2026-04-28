@@ -46,6 +46,7 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
         summary.total_time_in_seconds = time.perf_counter() - start
         return summary
     num_eliminate = _num_eliminate_for_schur(active_blocks, _effective_linear_solver(options.linear_solver_type))
+    schur_visibility = _schur_visibility_from_residual_blocks(problem, active_blocks, num_eliminate)
     lm_radius = _LevenbergMarquardtRadiusState(options.initial_trust_region_radius, options.max_trust_region_radius)
     radius = lm_radius.radius
     consecutive_invalid = 0
@@ -154,6 +155,8 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
                 max_num_spse_iterations=options.max_num_spse_iterations,
                 use_spse_initialization=options.use_spse_initialization,
                 spse_tolerance=options.spse_tolerance,
+                visibility=schur_visibility,
+                visibility_clustering_type=options.visibility_clustering_type,
             )
             linear_time = time.perf_counter() - linear_start
             step = linear_result.x
@@ -731,6 +734,50 @@ def _num_eliminate_for_schur(blocks: list[ParameterBlock], solver_type: LinearSo
     if not any(block.ordering_group != first_group for block in blocks):
         return 0
     return sum(block.tangent_size for block in blocks if block.ordering_group == first_group)
+
+
+def _schur_visibility_from_residual_blocks(
+    problem: Problem,
+    blocks: list[ParameterBlock],
+    num_eliminate: int,
+) -> tuple[tuple[int, ...], ...] | None:
+    if num_eliminate <= 0:
+        return None
+    eliminated: list[ParameterBlock] = []
+    retained: list[ParameterBlock] = []
+    offset = 0
+    for block in blocks:
+        next_offset = offset + block.tangent_size
+        if block.tangent_size == 0:
+            continue
+        if next_offset <= num_eliminate:
+            eliminated.append(block)
+        elif offset >= num_eliminate:
+            retained.append(block)
+        else:
+            return None
+        offset = next_offset
+    if not eliminated or not retained:
+        return None
+
+    eliminated_index = {block: index for index, block in enumerate(eliminated)}
+    retained_index = {block: index for index, block in enumerate(retained)}
+    visibility: list[set[int]] = [set() for _ in retained]
+    for residual_block in problem.residual_blocks:
+        visible_eliminated = {
+            eliminated_index[block]
+            for block in residual_block.parameter_blocks
+            if block in eliminated_index
+        }
+        if not visible_eliminated:
+            continue
+        for block in residual_block.parameter_blocks:
+            retained_id = retained_index.get(block)
+            if retained_id is not None:
+                visibility[retained_id].update(visible_eliminated)
+    if not any(visibility):
+        return None
+    return tuple(tuple(sorted(points)) for points in visibility)
 
 
 def _effective_linear_solver(requested: LinearSolverType) -> LinearSolverType:
