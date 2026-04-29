@@ -71,8 +71,8 @@ def time_callable(
 
 def dense_linear_benchmark(
     *,
-    rows: int = 160,
-    cols: int = 40,
+    rows: int = 2048,
+    cols: int = 256,
     solver_type: LinearSolverType = LinearSolverType.DENSE_QR,
     device: torch.device | str = "cpu",
     dtype: torch.dtype = torch.float64,
@@ -100,9 +100,9 @@ def dense_linear_benchmark(
 
 def schur_benchmark(
     *,
-    rows: int = 240,
-    eliminate: int = 36,
-    remain: int = 18,
+    rows: int = 4096,
+    eliminate: int = 512,
+    remain: int = 128,
     device: torch.device | str = "cpu",
     dtype: torch.dtype = torch.float64,
     warmup: int = 1,
@@ -130,9 +130,9 @@ def schur_benchmark(
 
 def iterative_schur_benchmark(
     *,
-    rows: int = 240,
-    eliminate: int = 36,
-    remain: int = 18,
+    rows: int = 4096,
+    eliminate: int = 512,
+    remain: int = 128,
     device: torch.device | str = "cpu",
     dtype: torch.dtype = torch.float64,
     warmup: int = 1,
@@ -175,9 +175,9 @@ def iterative_schur_benchmark(
 
 def iterative_schur_spse_benchmark(
     *,
-    rows: int = 240,
-    eliminate: int = 36,
-    remain: int = 18,
+    rows: int = 4096,
+    eliminate: int = 512,
+    remain: int = 128,
     device: torch.device | str = "cpu",
     dtype: torch.dtype = torch.float64,
     warmup: int = 1,
@@ -200,9 +200,9 @@ def iterative_schur_spse_benchmark(
 
 def cluster_tridiagonal_benchmark(
     *,
-    rows: int = 180,
-    cols: int = 36,
-    num_blocks: int = 6,
+    rows: int = 2048,
+    cols: int = 256,
+    num_blocks: int = 16,
     device: torch.device | str = "cpu",
     dtype: torch.dtype = torch.float64,
     warmup: int = 1,
@@ -238,9 +238,9 @@ def cluster_tridiagonal_benchmark(
 
 def sparse_direct_benchmark(
     *,
-    rows: int = 200,
-    cols: int = 48,
-    density: float = 0.15,
+    rows: int = 2000,
+    cols: int = 320,
+    density: float = 0.08,
     device: torch.device | str = "cpu",
     dtype: torch.dtype = torch.float64,
     warmup: int = 1,
@@ -276,9 +276,9 @@ def sparse_direct_benchmark(
 
 def cuda_block_schur_benchmark(
     *,
-    rows: int = 240,
-    eliminate: int = 36,
-    remain: int = 18,
+    rows: int = 4096,
+    eliminate: int = 512,
+    remain: int = 128,
     dtype: torch.dtype = torch.float64,
     warmup: int = 1,
     repeats: int = 5,
@@ -317,7 +317,7 @@ def cuda_block_schur_benchmark(
 
 def solver_curve_fit_benchmark(
     *,
-    num_observations: int = 80,
+    num_observations: int = 400,
     device: torch.device | str = "cpu",
     dtype: torch.dtype = torch.float64,
     warmup: int = 1,
@@ -350,8 +350,8 @@ def solver_curve_fit_benchmark(
 
 def covariance_benchmark(
     *,
-    rows: int = 120,
-    cols: int = 24,
+    rows: int = 1000,
+    cols: int = 160,
     device: torch.device | str = "cpu",
     dtype: torch.dtype = torch.float64,
     warmup: int = 1,

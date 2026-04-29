@@ -1,6 +1,6 @@
 # Performance Summary
 
-Run timestamp: 2026-04-29T21:07:18+03:00
+Run timestamp: 2026-04-29T21:20:58+03:00
 
 Environment:
 
@@ -22,47 +22,55 @@ conda run -n env2 python -m pytest tests\test_benchmarking.py -m performance -q
 
 Result: 4 passed, 6 deselected.
 
+The benchmark defaults were enlarged from smoke-sized matrices to medium workloads:
+
+- Dense/CGNR linear: `2048x256`
+- Dense/iterative Schur: `4096x640`, eliminating 512 variables
+- Cluster-tridiagonal CGNR: `2048x256`, 16 blocks
+- Sparse direct: `2000x320`, density `0.08`
+- Curve fitting: 400 residual observations
+- Dense covariance: `1000x160`
+
 Default CPU benchmark command:
 
 ```powershell
-conda run -n env2 python benchmarks\run_benchmarks.py --device cpu --dtype float64 --warmup 1 --repeats 5
+conda run -n env2 python benchmarks\run_benchmarks.py --device cpu --dtype float64 --warmup 1 --repeats 3
 ```
 
 | Benchmark | Device | Median (s) | Min (s) | Max (s) | Repeats | Metric |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| `linear/DENSE_QR/160x40` | cpu | 0.000116200 | 0.000112400 | 0.000221500 | 5 | 5.397476863e-14 |
-| `linear/CGNR/160x40` | cpu | 0.006576700 | 0.006493600 | 0.007717100 | 5 | 2.110957117e-09 |
-| `schur/dense/240x54/elim36` | cpu | 0.000183800 | 0.000172300 | 0.000226300 | 5 | 6.956253840e-14 |
-| `schur/iterative/SCHUR_JACOBI/240x54/elim36` | cpu | 0.000356400 | 0.000353600 | 0.000440800 | 5 | 1.412476743e-13 |
-| `schur/iterative/SCHUR_POWER_SERIES_EXPANSION/spse_init/240x54/elim36` | cpu | 0.001259900 | 0.001251000 | 0.001273400 | 5 | 5.104261089e-09 |
-| `linear/CGNR/CLUSTER_TRIDIAGONAL/180x36/blocks6` | cpu | 0.007961600 | 0.007832000 | 0.008774300 | 5 | 1.095381894e-09 |
-| `solver/curve_fit/80` | cpu | 0.479364000 | 0.445086100 | 0.479364000 | 2 | 2.304934798e-10 |
-| `covariance/dense_svd/120x24` | cpu | 0.018430200 | 0.018348600 | 0.018430200 | 2 | 5.638091295e-02 |
+| `linear/DENSE_QR/2048x256` | cpu | 0.011366100 | 0.009673000 | 0.011418800 | 3 | 1.298809143e-12 |
+| `linear/CGNR/2048x256` | cpu | 0.054742500 | 0.049490400 | 0.054885000 | 3 | 9.985342917e-10 |
+| `schur/dense/4096x640/elim512` | cpu | 0.013351400 | 0.010278700 | 0.013394800 | 3 | 5.176453269e-12 |
+| `schur/iterative/SCHUR_JACOBI/4096x640/elim512` | cpu | 0.025949200 | 0.020344700 | 0.028356900 | 3 | 5.116177559e-12 |
+| `schur/iterative/SCHUR_POWER_SERIES_EXPANSION/spse_init/4096x640/elim512` | cpu | 0.037386900 | 0.036241000 | 0.039135800 | 3 | 3.533976227e-09 |
+| `linear/CGNR/CLUSTER_TRIDIAGONAL/2048x256/blocks16` | cpu | 0.042535900 | 0.041992800 | 0.048768600 | 3 | 1.029618312e-09 |
+| `solver/curve_fit/400` | cpu | 2.202827300 | 2.202827300 | 2.202827300 | 1 | 7.330748407e-14 |
+| `covariance/dense_svd/1000x160` | cpu | 0.657943200 | 0.657943200 | 0.657943200 | 1 | 1.641717374e-02 |
 
 Default CUDA benchmark command:
 
 ```powershell
-conda run -n env2 python benchmarks\run_benchmarks.py --device cuda --dtype float64 --warmup 1 --repeats 5
+conda run -n env2 python benchmarks\run_benchmarks.py --device cuda --dtype float64 --warmup 1 --repeats 3
 ```
 
 | Benchmark | Device | Median (s) | Min (s) | Max (s) | Repeats | Metric |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| `linear/DENSE_QR/160x40` | cuda | 0.001260500 | 0.001153700 | 0.001800600 | 5 | 2.914779495e-14 |
-| `linear/CGNR/160x40` | cuda | 0.037074600 | 0.036675400 | 0.038554300 | 5 | 2.110958125e-09 |
-| `schur/dense/240x54/elim36` | cuda | 0.000804600 | 0.000766800 | 0.000861500 | 5 | 6.519344555e-14 |
-| `schur/iterative/SCHUR_JACOBI/240x54/elim36` | cuda | 0.001569700 | 0.001443500 | 0.001590200 | 5 | 1.013046115e-13 |
-| `schur/iterative/SCHUR_POWER_SERIES_EXPANSION/spse_init/240x54/elim36` | cuda | 0.007181600 | 0.006876900 | 0.008052600 | 5 | 5.104283002e-09 |
-| `linear/CGNR/CLUSTER_TRIDIAGONAL/180x36/blocks6` | cuda | 0.042060400 | 0.041532100 | 0.043308800 | 5 | 1.095367964e-09 |
-| `solver/curve_fit/80` | cuda | 1.847808500 | 1.793656600 | 1.847808500 | 2 | 2.304934798e-10 |
-| `covariance/dense_svd/120x24` | cuda | 0.016428700 | 0.015852800 | 0.016428700 | 2 | 5.638091295e-02 |
+| `linear/DENSE_QR/2048x256` | cuda | 0.003874700 | 0.003828000 | 0.004616800 | 3 | 4.016452835e-13 |
+| `linear/CGNR/2048x256` | cuda | 0.098517900 | 0.097872800 | 0.098554400 | 3 | 9.985338353e-10 |
+| `schur/dense/4096x640/elim512` | cuda | 0.010122500 | 0.009882100 | 0.010192600 | 3 | 3.630059702e-12 |
+| `schur/iterative/SCHUR_JACOBI/4096x640/elim512` | cuda | 0.018289100 | 0.018223800 | 0.018417400 | 3 | 3.613871476e-12 |
+| `schur/iterative/SCHUR_POWER_SERIES_EXPANSION/spse_init/4096x640/elim512` | cuda | 0.030906500 | 0.030897400 | 0.031642200 | 3 | 3.533999831e-09 |
+| `linear/CGNR/CLUSTER_TRIDIAGONAL/2048x256/blocks16` | cuda | 0.082315000 | 0.081834400 | 0.083603000 | 3 | 1.029739181e-09 |
+| `solver/curve_fit/400` | cuda | 9.785884700 | 9.785884700 | 9.785884700 | 1 | 7.330748429e-14 |
+| `covariance/dense_svd/1000x160` | cuda | 0.630727200 | 0.630727200 | 0.630727200 | 1 | 1.641717374e-02 |
 
 Gate-specific backend benchmarks:
 
 | Benchmark | Device | Median (s) | Min (s) | Max (s) | Repeats | Metric |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| `linear/SPARSE_NORMAL_CHOLESKY/scipy/64x16/density0.2` | cpu | 0.000646900 | 0.000626400 | 0.000784000 | 5 | 1.017484158e-14 |
-| `linear/DENSE_QR/64x16` | cuda | 0.000595600 | 0.000566100 | 0.000799600 | 5 | 5.759854580e-15 |
-| `cuda/block_schur/torch/64x20/elim12` | cuda | 0.001035600 | 0.001009200 | 0.001497000 | 5 | 2.007355686e-14 |
+| `linear/SPARSE_NORMAL_CHOLESKY/scipy/2000x320/density0.08` | cpu | 0.009300500 | 0.009217800 | 0.009578300 | 3 | 2.223122937e-13 |
+| `cuda/block_schur/torch/4096x640/elim512` | cuda | 0.011166500 | 0.010420900 | 0.011232500 | 3 | 3.903393465e-12 |
 
 Notes:
 

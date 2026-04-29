@@ -19,7 +19,7 @@ def main() -> None:
     parser.add_argument("--device", default="cpu", choices=["cpu", "cuda"])
     parser.add_argument("--dtype", default="float64", choices=["float32", "float64"])
     parser.add_argument("--warmup", type=int, default=1)
-    parser.add_argument("--repeats", type=int, default=5)
+    parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
 
