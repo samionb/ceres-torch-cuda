@@ -58,12 +58,21 @@ def test_cluster_tridiagonal_benchmark_smoke() -> None:
     assert result.metric < 1e-8
 
 
+@pytest.mark.skipif(not tc.cuda_available(), reason="CUDA is not available in this PyTorch environment")
+def test_cuda_block_schur_benchmark_smoke() -> None:
+    result = tc.cuda_block_schur_benchmark(rows=36, eliminate=6, remain=4, warmup=0, repeats=1)
+
+    assert result.name.startswith("cuda/block_schur/torch/")
+    assert result.device == "cuda"
+    assert result.metric < 1e-8
+
+
 @pytest.mark.performance
 @pytest.mark.skipif(not RUN_BENCHMARKS, reason="Set CERES_TORCH_RUN_BENCHMARKS=1 to run performance gates")
 def test_cpu_default_benchmark_suite_performance_gate() -> None:
     results = tc.run_default_benchmarks(device="cpu", dtype=torch.float64, warmup=0, repeats=1)
 
-    assert len(results) == 6
+    assert len(results) == 8
     for result in results:
         assert math.isfinite(result.metric)
         assert result.median_seconds <= BENCHMARK_MAX_SECONDS, result
@@ -75,9 +84,30 @@ def test_cpu_default_benchmark_suite_performance_gate() -> None:
 
 @pytest.mark.performance
 @pytest.mark.skipif(not RUN_BENCHMARKS, reason="Set CERES_TORCH_RUN_BENCHMARKS=1 to run performance gates")
+@pytest.mark.skipif(not tc.native_sparse_backends_available(), reason="SciPy sparse backend is not available")
+def test_sparse_direct_benchmark_performance_gate() -> None:
+    result = tc.sparse_direct_benchmark(rows=64, cols=16, density=0.2, warmup=0, repeats=1)
+
+    assert result.metric < 1e-6
+    assert result.median_seconds <= BENCHMARK_MAX_SECONDS
+
+
+@pytest.mark.performance
+@pytest.mark.skipif(not RUN_BENCHMARKS, reason="Set CERES_TORCH_RUN_BENCHMARKS=1 to run performance gates")
 @pytest.mark.skipif(not tc.cuda_available(), reason="CUDA is not available in this PyTorch environment")
 def test_cuda_dense_linear_benchmark_performance_gate() -> None:
     result = tc.dense_linear_benchmark(rows=64, cols=16, device="cuda", dtype=torch.float64, warmup=1, repeats=2)
+
+    assert result.device == "cuda"
+    assert result.metric < 1e-6
+    assert result.median_seconds <= BENCHMARK_MAX_SECONDS
+
+
+@pytest.mark.performance
+@pytest.mark.skipif(not RUN_BENCHMARKS, reason="Set CERES_TORCH_RUN_BENCHMARKS=1 to run performance gates")
+@pytest.mark.skipif(not tc.cuda_available(), reason="CUDA is not available in this PyTorch environment")
+def test_cuda_block_schur_benchmark_performance_gate() -> None:
+    result = tc.cuda_block_schur_benchmark(rows=64, eliminate=12, remain=8, warmup=1, repeats=2)
 
     assert result.device == "cuda"
     assert result.metric < 1e-6

@@ -3,6 +3,7 @@ from .benchmarking import (
     BenchmarkResult,
     cluster_tridiagonal_benchmark,
     covariance_benchmark,
+    cuda_block_schur_benchmark,
     dense_linear_benchmark,
     format_benchmark_results,
     iterative_schur_benchmark,

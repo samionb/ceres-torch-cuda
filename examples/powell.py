@@ -5,8 +5,11 @@ import torch
 import ceres_torch as tc
 
 
-def main() -> None:
-    dtype = torch.float64
+def run(
+    *,
+    dtype: torch.dtype = torch.float64,
+    max_num_iterations: int = 500,
+) -> tuple[tc.SolverSummary, torch.Tensor]:
     x1 = torch.tensor([3.0], dtype=dtype)
     x2 = torch.tensor([-1.0], dtype=dtype)
     x3 = torch.tensor([0.0], dtype=dtype)
@@ -31,11 +34,16 @@ def main() -> None:
     )
 
     summary = tc.solve(
-        tc.SolverOptions(max_num_iterations=500, function_tolerance=1e-12, parameter_tolerance=1e-12),
+        tc.SolverOptions(max_num_iterations=max_num_iterations, function_tolerance=1e-12, parameter_tolerance=1e-12),
         problem,
     )
+    return summary, torch.cat([x1, x2, x3, x4])
+
+
+def main() -> None:
+    summary, x = run()
     print(summary.BriefReport())
-    print(f"x1={x1.item():.8f} x2={x2.item():.8f} x3={x3.item():.8f} x4={x4.item():.8f}")
+    print(f"x1={x[0].item():.8f} x2={x[1].item():.8f} x3={x[2].item():.8f} x4={x[3].item():.8f}")
 
 
 if __name__ == "__main__":

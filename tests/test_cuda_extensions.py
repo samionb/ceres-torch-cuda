@@ -46,6 +46,17 @@ def test_register_cuda_sparse_backends_is_safe_when_unavailable() -> None:
         tc.unregister_cuda_sparse_backends()
 
 
+def test_register_cuda_extension_backends_is_safe_when_unavailable() -> None:
+    info = tc.register_cuda_extension_backends()
+    try:
+        if info.available:
+            assert {"sparse_normal_cholesky", "sparse_schur", "block_schur"}.issubset(info.registered)
+        else:
+            assert info.registered == ()
+    finally:
+        tc.unregister_cuda_sparse_backends()
+
+
 @pytest.mark.skipif(not tc.cuda_available(), reason="CUDA is not available")
 def test_torch_cuda_sparse_normal_backend_matches_dense_solver() -> None:
     A = torch.tensor(
@@ -119,4 +130,29 @@ def test_cuda_extension_block_schur_matches_dense_solver() -> None:
     dense = tc.solve_linear_system(A, b, solver_type=tc.LinearSolverType.DENSE_SCHUR, num_eliminate=1)
 
     assert result.summary.message == "cuda extension block schur"
+    torch.testing.assert_close(result.x, dense.x, atol=1e-8, rtol=1e-8)
+
+
+@pytest.mark.native_extension
+@pytest.mark.skipif(not RUN_CUDA_EXTENSION_BUILD, reason="Set CERES_TORCH_BUILD_CUDA_EXTENSIONS=1 to build CUDA extension")
+@pytest.mark.skipif(not tc.cuda_extension_build_available(), reason=tc.get_cuda_extension_info().message)
+def test_cuda_extension_sparse_normal_matches_dense_solver() -> None:
+    A = torch.tensor(
+        [
+            [3.0, 0.0, 1.0],
+            [0.0, 4.0, -1.0],
+            [2.0, 0.0, 0.0],
+            [0.0, -1.0, 5.0],
+        ],
+        dtype=torch.float64,
+        device="cuda",
+    )
+    expected = torch.tensor([1.0, -2.0, 0.5], dtype=torch.float64, device="cuda")
+    b = A @ expected
+    damping = torch.tensor([0.1, 0.2, 0.3], dtype=torch.float64, device="cuda")
+
+    result = tc.cuda_extension_sparse_normal_cholesky(A, b, damping=damping)
+    dense = tc.solve_linear_system(A, b, solver_type=tc.LinearSolverType.DENSE_NORMAL_CHOLESKY, damping=damping)
+
+    assert result.summary.message == "cuda extension sparse normal equations"
     torch.testing.assert_close(result.x, dense.x, atol=1e-8, rtol=1e-8)

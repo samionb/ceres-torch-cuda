@@ -92,6 +92,47 @@ def test_bicubic_interpolation_example_recovers_shift() -> None:
     torch.testing.assert_close(estimated_shift, true_shift, atol=1e-8, rtol=1e-8)
 
 
+def test_sampled_function_example_reports_cubic_derivative() -> None:
+    module = load_example("sampled_function")
+    x, value, derivative, expected_derivative = module.run()
+
+    assert x.item() == 2.25
+    assert torch.isfinite(value)
+    torch.testing.assert_close(derivative, expected_derivative, atol=2e-2, rtol=2e-2)
+
+
+def test_powell_example_converges_to_zero() -> None:
+    module = load_example("powell")
+    summary, x = module.run()
+
+    assert summary.IsSolutionUsable()
+    assert torch.linalg.norm(x) < 1e-3
+
+
+def test_tiny_bundle_adjustment_example_reduces_reprojection_error() -> None:
+    module = load_example("tiny_bundle_adjustment")
+    summary, _camera, initial_errors, final_errors = module.run()
+
+    assert summary.IsSolutionUsable()
+    assert torch.linalg.norm(final_errors) < torch.linalg.norm(initial_errors)
+
+
+def test_pose_graph_2d_slam_example_reduces_constraint_error() -> None:
+    module = load_example("pose_graph_2d")
+    summary, initial, final, true_poses = module.run()
+
+    def total_constraint_error(poses: torch.Tensor) -> torch.Tensor:
+        total = poses.new_tensor(0.0)
+        for i in range(poses.shape[0] - 1):
+            measurement = module.relative_pose(true_poses[i], true_poses[i + 1]).detach()
+            error = module.relative_pose(poses[i], poses[i + 1]) - measurement
+            total = total + torch.dot(error, error)
+        return torch.sqrt(total)
+
+    assert summary.IsSolutionUsable()
+    assert total_constraint_error(final) < total_constraint_error(initial)
+
+
 def test_robot_pose_mle_example_reduces_range_errors() -> None:
     module = load_example("robot_pose_mle")
     summary, initial_odometry, final_odometry, _ranges, initial_errors, final_errors = module.run(
@@ -133,3 +174,13 @@ def test_more_garbow_hillstrom_subset_converges() -> None:
         assert summary.IsSolutionUsable()
         target = torch.tensor(spec.expected, dtype=torch.float64)
         torch.testing.assert_close(x, target, atol=1e-4, rtol=1e-4)
+
+
+def test_nist_subset_matches_certified_values() -> None:
+    module = load_example("nist")
+    for results in [module.run("Misra1a"), module.run("BoxBOD")]:
+        for summary, parameters, spec in results.values():
+            certified = torch.tensor(spec.certified, dtype=torch.float64)
+            assert summary.IsSolutionUsable()
+            assert module.log_relative_error(parameters, certified) >= 4.0
+            assert abs(summary.final_cost - spec.certified_cost) < 1e-6 * max(1.0, spec.certified_cost)

@@ -9,6 +9,7 @@ import torch
 
 from .costs import AutoDiffCostFunction, NormalPrior
 from .covariance import Covariance
+from .cuda_backends import register_cuda_sparse_backends, torch_cuda_backend_available, unregister_cuda_sparse_backends
 from .linear import solve_linear_system
 from .problem import Problem
 from .solver import solve
@@ -273,6 +274,47 @@ def sparse_direct_benchmark(
     )
 
 
+def cuda_block_schur_benchmark(
+    *,
+    rows: int = 240,
+    eliminate: int = 36,
+    remain: int = 18,
+    dtype: torch.dtype = torch.float64,
+    warmup: int = 1,
+    repeats: int = 5,
+) -> BenchmarkResult:
+    if not torch_cuda_backend_available():
+        raise RuntimeError("PyTorch CUDA backend is not available.")
+    device = torch.device("cuda")
+    generator = torch.Generator(device="cpu").manual_seed(31)
+    cols = eliminate + remain
+    A = _randn((rows, cols), generator=generator, dtype=dtype, device=device)
+    x_true = _randn((cols,), generator=generator, dtype=dtype, device=device)
+    b = A @ x_true
+
+    def run() -> torch.Tensor:
+        register_cuda_sparse_backends()
+        try:
+            result = solve_linear_system(
+                A,
+                b,
+                solver_type=LinearSolverType.SPARSE_SCHUR,
+                num_eliminate=eliminate,
+            )
+        finally:
+            unregister_cuda_sparse_backends()
+        return torch.linalg.norm(A @ result.x - b)
+
+    return time_callable(
+        f"cuda/block_schur/torch/{rows}x{cols}/elim{eliminate}",
+        run,
+        device=device,
+        dtype=dtype,
+        warmup=warmup,
+        repeats=repeats,
+    )
+
+
 def solver_curve_fit_benchmark(
     *,
     num_observations: int = 80,
@@ -356,6 +398,8 @@ def run_default_benchmarks(
         ),
         schur_benchmark(device=device, dtype=dtype, warmup=warmup, repeats=repeats),
         iterative_schur_benchmark(device=device, dtype=dtype, warmup=warmup, repeats=repeats),
+        iterative_schur_spse_benchmark(device=device, dtype=dtype, warmup=warmup, repeats=repeats),
+        cluster_tridiagonal_benchmark(device=device, dtype=dtype, warmup=warmup, repeats=repeats),
         solver_curve_fit_benchmark(device=device, dtype=dtype, warmup=warmup, repeats=max(1, repeats // 2)),
         covariance_benchmark(device=device, dtype=dtype, warmup=warmup, repeats=max(1, repeats // 2)),
     ]

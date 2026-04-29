@@ -27,9 +27,9 @@ areas. Status values:
 | Callbacks/logging | `iteration_callback.h`, callbacks files | `ceres_torch.callbacks` | implemented | Iteration/evaluation callback behavior and summary visibility |
 | Tiny solver | `tiny_solver.h` | `ceres_torch.tiny_solver` | implemented | Small dense LM behavior with Ceres-style statuses, option validation, cost/gradient/step/function termination, and summary/report API |
 | C API | `c_api.h` | Not cloned | planned exception | Python callable/module support replaces C ABI |
-| Examples/data | `examples`, `data` | `examples`, tests | partial | Port all tutorial examples, More-Garbow-Hillstrom subset, and BAL/NIST/SLAM validations |
-| CUDA | CUDA internal files | PyTorch device + optional backends + `native/cuda` | partial | CUDA tensor smoke tests, PyTorch CUDA sparse/block-Schur backend tests, opt-in native extension build/load test |
-| Performance benchmarks | internal benchmark/test matrix | `ceres_torch.benchmarking`, `benchmarks` | partial | Opt-in dense, dense/iterative Schur, SPSE initialization, cluster-tridiagonal, sparse-direct, covariance, solver, and CUDA benchmark gates |
+| Examples/data | `examples`, `data` | `examples`, tests | implemented | Tutorial examples expose `run()` validation hooks, More-Garbow-Hillstrom subset, tiny BAL/simple bundle-adjuster, NIST Misra1a/BoxBOD certified regression checks, and 2D SLAM pose-graph validation |
+| CUDA | CUDA internal files | PyTorch device + optional backends + `native/cuda` | implemented | CUDA tensor smoke tests, PyTorch CUDA sparse/block-Schur backend tests, safe registration when unavailable, and opt-in native extension build/load tests for block-Schur and sparse-normal paths |
+| Performance benchmarks | internal benchmark/test matrix | `ceres_torch.benchmarking`, `benchmarks` | implemented | Opt-in dense, dense/iterative Schur, SPSE initialization, cluster-tridiagonal, sparse-direct, covariance, solver, and CUDA block-Schur benchmark gates |
 
 ## Full-Parity Backlog
 
@@ -69,3 +69,4 @@ areas. Status values:
 - `robot_pose_mle.py`
 - `simple_bundle_adjuster.py`
 - `more_garbow_hillstrom.py`
+- `nist.py`
