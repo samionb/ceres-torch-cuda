@@ -371,6 +371,7 @@ class SolverSummary:
     num_residual_evaluations: int = 0
     num_jacobian_evaluations: int = 0
     num_linear_solves: int = 0
+    num_inner_iteration_steps: int = 0
     num_line_search_steps: int = 0
     num_line_search_function_evaluations: int = 0
     num_line_search_gradient_evaluations: int = 0
@@ -448,6 +449,7 @@ class SolverSummary:
                 f"Successful steps: {self.num_successful_steps}",
                 f"Unsuccessful steps: {self.num_unsuccessful_steps}",
                 f"Linear solves: {self.num_linear_solves}",
+                f"Inner iteration steps: {self.num_inner_iteration_steps}",
                 f"Line search steps: {self.num_line_search_steps}",
                 f"Line search function evaluations: {self.num_line_search_function_evaluations}",
                 f"Line search gradient evaluations: {self.num_line_search_gradient_evaluations}",

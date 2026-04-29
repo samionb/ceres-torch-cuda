@@ -51,6 +51,7 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
     radius = lm_radius.radius
     consecutive_invalid = 0
     previous_cost: float | None = None
+    inner_iterations_are_enabled = options.use_inner_iterations
     summary.preprocessor_time_in_seconds = time.perf_counter() - preprocessor_start
     minimizer_start = time.perf_counter()
 
@@ -176,10 +177,11 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
             iter_summary.linear_solver_iterations = linear_iterations
             iter_summary.linear_solver_time_in_seconds = linear_time
             iter_summary.step_solver_time_in_seconds = linear_time
+            iter_summary.trust_region_radius = radius
             iter_summary.iteration_time_in_seconds = time.perf_counter() - iter_start
             iter_summary.cumulative_time_in_seconds = time.perf_counter() - start
             summary.num_unsuccessful_steps += 1
-            if consecutive_invalid > options.max_num_consecutive_invalid_steps:
+            if consecutive_invalid >= options.max_num_consecutive_invalid_steps:
                 summary.termination_type = TerminationType.FAILURE
                 summary.message = "Too many invalid trust-region steps."
                 break
@@ -218,29 +220,32 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
         model_decrease = _model_decrease(J, r, step)
         step_is_valid = model_decrease > 0.0
         inner_iterations_were_useful = False
-        if step_is_valid and options.use_inner_iterations:
+        if step_is_valid and inner_iterations_are_enabled:
             inner_start = time.perf_counter()
             trust_region_candidate_cost = candidate_cost
-            candidate_cost, inner_steps, inner_jacobian_evals, inner_residual_time, inner_jacobian_time = _run_inner_iterations(
+            inner_result = _run_inner_iterations(
                 problem,
                 active_blocks,
                 options,
                 current_cost=candidate_cost,
             )
+            candidate_cost = inner_result.cost
             inner_time = time.perf_counter() - inner_start
-            if inner_steps:
-                summary.num_residual_evaluations += inner_steps
-            if inner_jacobian_evals:
-                summary.num_jacobian_evaluations += inner_jacobian_evals
-            summary.residual_evaluation_time_in_seconds += inner_residual_time
-            summary.jacobian_evaluation_time_in_seconds += inner_jacobian_time
+            summary.num_inner_iteration_steps += 1
+            if inner_result.residual_evaluations:
+                summary.num_residual_evaluations += inner_result.residual_evaluations
+            if inner_result.jacobian_evaluations:
+                summary.num_jacobian_evaluations += inner_result.jacobian_evaluations
+            summary.residual_evaluation_time_in_seconds += inner_result.residual_time_in_seconds
+            summary.jacobian_evaluation_time_in_seconds += inner_result.jacobian_time_in_seconds
             summary.inner_iteration_time_in_seconds += inner_time
-            iter_summary.residual_evaluation_time_in_seconds += inner_residual_time
-            iter_summary.jacobian_evaluation_time_in_seconds += inner_jacobian_time
+            iter_summary.residual_evaluation_time_in_seconds += inner_result.residual_time_in_seconds
+            iter_summary.jacobian_evaluation_time_in_seconds += inner_result.jacobian_time_in_seconds
             iter_summary.inner_iteration_time_in_seconds = inner_time
             inner_model_decrease = trust_region_candidate_cost - candidate_cost
             model_decrease += inner_model_decrease
             inner_iterations_were_useful = candidate_cost < min(cost, trust_region_candidate_cost)
+            inner_iterations_are_enabled = inner_result.relative_progress > options.inner_iteration_tolerance
         rho = step_evaluator.step_quality(candidate_cost, model_decrease) if step_is_valid else 0.0
         accepted = step_is_valid and (inner_iterations_were_useful or rho > options.min_relative_decrease)
 
@@ -331,7 +336,7 @@ def _trust_region_solve(options: SolverOptions, problem: Problem) -> SolverSumma
                 break
 
         if radius <= options.min_trust_region_radius:
-            summary.termination_type = TerminationType.NO_CONVERGENCE
+            summary.termination_type = TerminationType.CONVERGENCE
             summary.message = "Minimum trust-region radius reached."
             break
         if time.perf_counter() - start >= options.max_solver_time_in_seconds:
@@ -962,19 +967,32 @@ def _projected_line_search_step(
     return step, iterations, evaluations, residual_time
 
 
+@dataclass
+class _InnerIterationResult:
+    cost: float
+    residual_evaluations: int = 0
+    jacobian_evaluations: int = 0
+    residual_time_in_seconds: float = 0.0
+    jacobian_time_in_seconds: float = 0.0
+    accepted_steps: int = 0
+    relative_progress: float = 0.0
+
+
 def _run_inner_iterations(
     problem: Problem,
     active_blocks: list[ParameterBlock],
     options: SolverOptions,
     *,
     current_cost: float,
-) -> tuple[float, int, int, float, float]:
+) -> _InnerIterationResult:
     if not options.use_inner_iterations:
-        return current_cost, 0, 0, 0.0, 0.0
+        return _InnerIterationResult(cost=current_cost)
+    initial_cost = current_cost
     residual_evaluations = 0
     jacobian_evaluations = 0
     residual_time = 0.0
     jacobian_time = 0.0
+    accepted_steps = 0
     for block in active_blocks:
         if block.tangent_size == 0:
             continue
@@ -1012,9 +1030,22 @@ def _run_inner_iterations(
         required = options.inner_iteration_tolerance * max(abs(current_cost), 1e-12)
         if improvement > 0.0 and improvement >= required:
             current_cost = candidate_cost
+            accepted_steps += 1
         else:
             problem.restore(snapshot)
-    return current_cost, residual_evaluations, jacobian_evaluations, residual_time, jacobian_time
+    if initial_cost > 0.0:
+        relative_progress = 1.0 - current_cost / initial_cost
+    else:
+        relative_progress = 0.0
+    return _InnerIterationResult(
+        cost=current_cost,
+        residual_evaluations=residual_evaluations,
+        jacobian_evaluations=jacobian_evaluations,
+        residual_time_in_seconds=residual_time,
+        jacobian_time_in_seconds=jacobian_time,
+        accepted_steps=accepted_steps,
+        relative_progress=relative_progress,
+    )
 
 
 def _updated_trust_region_radius(

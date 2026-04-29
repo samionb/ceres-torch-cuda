@@ -1,8 +1,12 @@
+import importlib
+
 import torch
 import pytest
 
 import ceres_torch as tc
 from ceres_torch.solver import _LevenbergMarquardtRadiusState, _TrustRegionStepEvaluator
+
+solver_module = importlib.import_module("ceres_torch.solver")
 
 
 def test_problem_evaluate_autodiff_jacobian() -> None:
@@ -541,6 +545,7 @@ def test_solver_reports_detailed_timing_counters() -> None:
     assert "Preprocessor time" in report
     assert "Preconditioner" in report
     assert "Line search interpolation" in report
+    assert "Inner iteration steps" in report
 
 
 def test_levenberg_marquardt_radius_update_matches_ceres_strategy() -> None:
@@ -600,6 +605,63 @@ def test_inner_iterations_improve_blockwise_nonlinear_problem() -> None:
 
     assert inner_summary.final_cost < plain_summary.final_cost
     assert inner_summary.num_residual_evaluations > plain_summary.num_residual_evaluations
+    assert inner_summary.num_inner_iteration_steps > 0
+
+
+def test_inner_iterations_disable_after_relative_progress_below_tolerance() -> None:
+    x = torch.tensor([-1.2], dtype=torch.float64)
+    y = torch.tensor([1.0], dtype=torch.float64)
+    problem = tc.Problem()
+    problem.AddResidualBlock(
+        tc.AutoDiffCostFunction(lambda x, y: torch.stack([10.0 * (y[0] - x[0] ** 2), 1.0 - x[0]]), [1, 1], 2),
+        None,
+        [x, y],
+    )
+
+    summary = tc.solve(
+        tc.SolverOptions(
+            max_num_iterations=4,
+            use_inner_iterations=True,
+            inner_iteration_tolerance=1.0,
+            gradient_tolerance=0.0,
+            function_tolerance=0.0,
+            parameter_tolerance=0.0,
+        ),
+        problem,
+    )
+
+    assert summary.num_successful_steps > 0
+    assert summary.num_inner_iteration_steps == 1
+
+
+def test_invalid_trust_region_step_records_rejected_radius_and_failure_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    x = torch.tensor([0.0], dtype=torch.float64)
+    problem = tc.Problem()
+    problem.AddResidualBlock(tc.AutoDiffCostFunction(lambda x: 1.0 - x, [1]), None, [x])
+
+    def fake_solve_linear_system(A: torch.Tensor, b: torch.Tensor, **_: object) -> tc.LinearSolverResult:
+        return tc.LinearSolverResult(
+            x=torch.full((A.shape[1],), float("nan"), dtype=A.dtype, device=A.device),
+            summary=tc.LinearSolverSummary(residual_norm=float("nan"), num_iterations=1, success=False),
+        )
+
+    monkeypatch.setattr(solver_module, "solve_linear_system", fake_solve_linear_system)
+    summary = tc.solve(
+        tc.SolverOptions(
+            max_num_iterations=3,
+            initial_trust_region_radius=4.0,
+            max_num_consecutive_invalid_steps=2,
+            gradient_tolerance=0.0,
+        ),
+        problem,
+    )
+
+    assert summary.termination_type is tc.TerminationType.FAILURE
+    assert summary.num_unsuccessful_steps == 2
+    assert summary.iterations[1].step_is_valid is False
+    assert summary.iterations[1].trust_region_radius == pytest.approx(2.0)
 
 
 def test_nonmonotonic_trust_region_restores_best_state_for_callbacks_and_final_state() -> None:
