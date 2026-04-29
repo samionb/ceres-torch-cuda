@@ -8,7 +8,7 @@ import ceres_torch as tc
 
 
 RUN_BENCHMARKS = os.environ.get("CERES_TORCH_RUN_BENCHMARKS") == "1"
-BENCHMARK_MAX_SECONDS = float(os.environ.get("CERES_TORCH_BENCHMARK_MAX_SECONDS", "10.0"))
+BENCHMARK_MAX_SECONDS = float(os.environ.get("CERES_TORCH_BENCHMARK_MAX_SECONDS", "120.0"))
 
 
 def test_benchmark_harness_smoke_and_csv_format() -> None:

@@ -7,7 +7,7 @@ from typing import Callable, Sequence
 
 import torch
 
-from .costs import AutoDiffCostFunction, NormalPrior
+from .costs import AnalyticCostFunction, NormalPrior
 from .covariance import Covariance
 from .cuda_backends import register_cuda_sparse_backends, torch_cuda_backend_available, unregister_cuda_sparse_backends
 from .linear import solve_linear_system
@@ -36,7 +36,7 @@ def time_callable(
     device: torch.device | str = "cpu",
     dtype: torch.dtype = torch.float64,
     warmup: int = 1,
-    repeats: int = 5,
+    repeats: int = 3,
 ) -> BenchmarkResult:
     device = torch.device(device)
     for _ in range(warmup):
@@ -71,13 +71,13 @@ def time_callable(
 
 def dense_linear_benchmark(
     *,
-    rows: int = 2048,
+    rows: int = 204800,
     cols: int = 256,
     solver_type: LinearSolverType = LinearSolverType.DENSE_QR,
     device: torch.device | str = "cpu",
     dtype: torch.dtype = torch.float64,
     warmup: int = 1,
-    repeats: int = 5,
+    repeats: int = 3,
 ) -> BenchmarkResult:
     generator = torch.Generator(device="cpu").manual_seed(7)
     A = _randn((rows, cols), generator=generator, dtype=dtype, device=device)
@@ -100,13 +100,13 @@ def dense_linear_benchmark(
 
 def schur_benchmark(
     *,
-    rows: int = 4096,
+    rows: int = 409600,
     eliminate: int = 512,
     remain: int = 128,
     device: torch.device | str = "cpu",
     dtype: torch.dtype = torch.float64,
     warmup: int = 1,
-    repeats: int = 5,
+    repeats: int = 3,
 ) -> BenchmarkResult:
     generator = torch.Generator(device="cpu").manual_seed(11)
     cols = eliminate + remain
@@ -130,13 +130,13 @@ def schur_benchmark(
 
 def iterative_schur_benchmark(
     *,
-    rows: int = 4096,
+    rows: int = 409600,
     eliminate: int = 512,
     remain: int = 128,
     device: torch.device | str = "cpu",
     dtype: torch.dtype = torch.float64,
     warmup: int = 1,
-    repeats: int = 5,
+    repeats: int = 3,
     preconditioner_type: PreconditionerType = PreconditionerType.SCHUR_JACOBI,
     use_spse_initialization: bool = False,
     max_num_spse_iterations: int = 5,
@@ -175,13 +175,13 @@ def iterative_schur_benchmark(
 
 def iterative_schur_spse_benchmark(
     *,
-    rows: int = 4096,
+    rows: int = 409600,
     eliminate: int = 512,
     remain: int = 128,
     device: torch.device | str = "cpu",
     dtype: torch.dtype = torch.float64,
     warmup: int = 1,
-    repeats: int = 5,
+    repeats: int = 3,
     max_num_spse_iterations: int = 5,
 ) -> BenchmarkResult:
     return iterative_schur_benchmark(
@@ -200,13 +200,13 @@ def iterative_schur_spse_benchmark(
 
 def cluster_tridiagonal_benchmark(
     *,
-    rows: int = 2048,
+    rows: int = 204800,
     cols: int = 256,
     num_blocks: int = 16,
     device: torch.device | str = "cpu",
     dtype: torch.dtype = torch.float64,
     warmup: int = 1,
-    repeats: int = 5,
+    repeats: int = 3,
 ) -> BenchmarkResult:
     generator = torch.Generator(device="cpu").manual_seed(29)
     A = _randn((rows, cols), generator=generator, dtype=dtype, device=device)
@@ -238,13 +238,13 @@ def cluster_tridiagonal_benchmark(
 
 def sparse_direct_benchmark(
     *,
-    rows: int = 2000,
+    rows: int = 200000,
     cols: int = 320,
     density: float = 0.08,
     device: torch.device | str = "cpu",
     dtype: torch.dtype = torch.float64,
     warmup: int = 1,
-    repeats: int = 5,
+    repeats: int = 3,
 ) -> BenchmarkResult:
     if not native_sparse_backends_available():
         raise RuntimeError("Native sparse backends are not available; install the 'sparse' extra.")
@@ -276,12 +276,12 @@ def sparse_direct_benchmark(
 
 def cuda_block_schur_benchmark(
     *,
-    rows: int = 4096,
+    rows: int = 409600,
     eliminate: int = 512,
     remain: int = 128,
     dtype: torch.dtype = torch.float64,
     warmup: int = 1,
-    repeats: int = 5,
+    repeats: int = 3,
 ) -> BenchmarkResult:
     if not torch_cuda_backend_available():
         raise RuntimeError("PyTorch CUDA backend is not available.")
@@ -317,11 +317,11 @@ def cuda_block_schur_benchmark(
 
 def solver_curve_fit_benchmark(
     *,
-    num_observations: int = 400,
+    num_observations: int = 40000,
     device: torch.device | str = "cpu",
     dtype: torch.dtype = torch.float64,
     warmup: int = 1,
-    repeats: int = 3,
+    repeats: int = 1,
 ) -> BenchmarkResult:
     t = torch.linspace(0.0, 2.0, num_observations, dtype=dtype, device=device)
     y = 2.5 * torch.exp(-1.3 * t) + 0.7
@@ -329,12 +329,25 @@ def solver_curve_fit_benchmark(
     def run() -> torch.Tensor:
         params = torch.tensor([1.0, -0.5, 0.0], dtype=dtype, device=device)
         problem = Problem()
-        for ti, yi in zip(t, y):
-            problem.AddResidualBlock(
-                AutoDiffCostFunction(lambda p, ti=ti, yi=yi: p[0] * torch.exp(p[1] * ti) + p[2] - yi, [3], 1),
-                None,
-                [params],
-            )
+        problem.AddResidualBlock(
+            AnalyticCostFunction(
+                lambda p: p[0] * torch.exp(p[1] * t) + p[2] - y,
+                lambda p: [
+                    torch.stack(
+                        [
+                            torch.exp(p[1] * t),
+                            p[0] * t * torch.exp(p[1] * t),
+                            torch.ones_like(t),
+                        ],
+                        dim=1,
+                    )
+                ],
+                [3],
+                num_observations,
+            ),
+            None,
+            [params],
+        )
         summary = solve(SolverOptions(max_num_iterations=30, gradient_tolerance=1e-12), problem)
         return torch.tensor(summary.final_cost, dtype=dtype, device=device)
 
@@ -350,12 +363,12 @@ def solver_curve_fit_benchmark(
 
 def covariance_benchmark(
     *,
-    rows: int = 1000,
+    rows: int = 100000,
     cols: int = 160,
     device: torch.device | str = "cpu",
     dtype: torch.dtype = torch.float64,
     warmup: int = 1,
-    repeats: int = 3,
+    repeats: int = 1,
 ) -> BenchmarkResult:
     generator = torch.Generator(device="cpu").manual_seed(19)
     A = _randn((rows, cols), generator=generator, dtype=dtype, device=device)
@@ -385,7 +398,7 @@ def run_default_benchmarks(
     device: torch.device | str = "cpu",
     dtype: torch.dtype = torch.float64,
     warmup: int = 1,
-    repeats: int = 5,
+    repeats: int = 3,
 ) -> list[BenchmarkResult]:
     return [
         dense_linear_benchmark(device=device, dtype=dtype, warmup=warmup, repeats=repeats),
